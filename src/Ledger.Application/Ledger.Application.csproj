@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk"><!-- TargetFramework, Nullable and ImplicitUsings are set centrally in Directory.Build.props -->
+
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ledger.Domain\Ledger.Domain.csproj" />
+  </ItemGroup>
+</Project>

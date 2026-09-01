@@ -1,0 +1,8 @@
+# Normalise line endings: LF in the repository, native in the working copy.
+* text=auto
+
+*.sln text eol=crlf
+*.csproj text eol=lf
+*.cs text eol=lf
+*.md text eol=lf
+*.json text eol=lf
