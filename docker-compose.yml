@@ -19,7 +19,13 @@ services:
       # or a secret store, never from a file in the repository.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledger}
     ports:
-      - "5432:5432"
+      # Published on 55432 rather than the conventional 5432 because Windows
+      # reserves scattered TCP ranges for Hyper-V/WSL2 — 5432 commonly falls
+      # inside one, and Docker then fails to bind it with a permissions error
+      # that has nothing to do with Docker. Check with:
+      #   netsh interface ipv4 show excludedportrange protocol=tcp
+      # Override with POSTGRES_PORT=5432 on a machine where that port is free.
+      - "${POSTGRES_PORT:-55432}:5432"
     volumes:
       - ledger-postgres-data:/var/lib/postgresql/data
     healthcheck:

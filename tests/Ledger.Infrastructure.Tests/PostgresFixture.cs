@@ -25,7 +25,10 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public PostgresFixture()
     {
-        if (!DockerAvailability.IsAvailable)
+        // Built whenever the tests are going to run at all. If Docker was
+        // demanded but is absent, starting this container is what produces the
+        // real error, rather than an empty connection string further downstream.
+        if (DockerAvailability.ShouldSkip)
         {
             return;
         }

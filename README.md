@@ -184,8 +184,14 @@ Requires the .NET 8 SDK; the exact version is pinned in `global.json`.
 
 The integration tests start their own throwaway PostgreSQL container through
 Testcontainers, so **they need a running Docker daemon**. Without one they report
-as skipped rather than failing — treat a skip in CI as a failure, because it
-means the PostgreSQL mapping went unverified.
+as skipped rather than failing. Set `LEDGER_REQUIRE_DOCKER=1` to turn a skip into
+a failure, and set it in CI — if the tests that prove the PostgreSQL mapping do
+not run, the mapping is unverified, and that should break the build rather than
+pass quietly:
+
+```bash
+LEDGER_REQUIRE_DOCKER=1 dotnet test
+```
 
 To run the API against a database, start one and supply a connection string:
 
@@ -193,6 +199,13 @@ To run the API against a database, start one and supply a connection string:
 docker compose up -d postgres
 dotnet run --project src/Ledger.Api
 ```
+
+The development database is published on **port 55432**, not the conventional
+5432. Windows reserves scattered TCP ranges for Hyper-V and WSL2, and 5432
+commonly falls inside one; Docker then fails to bind it with a permissions error
+that looks like a Docker problem but is not. `netsh interface ipv4 show
+excludedportrange protocol=tcp` lists the reserved ranges. Set
+`POSTGRES_PORT=5432` on a machine where that port is free.
 
 `appsettings.Development.json` carries a local development connection string.
 Anywhere else, `ConnectionStrings:LedgerDatabase` must come from the environment
@@ -202,7 +215,7 @@ committed.
 Schema changes are applied with migrations:
 
 ```bash
-dotnet dotnet-ef database update --project src/Ledger.Infrastructure --startup-project src/Ledger.Infrastructure
+LEDGER_DESIGN_TIME_CONNECTION="Host=localhost;Port=55432;Database=ledger;Username=ledger;Password=ledger"   dotnet dotnet-ef database update --project src/Ledger.Infrastructure --startup-project src/Ledger.Infrastructure
 ```
 
 ## Architecture decisions
