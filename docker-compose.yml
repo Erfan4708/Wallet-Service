@@ -1,0 +1,32 @@
+# Local development database only.
+#
+# Deliberately just PostgreSQL: the ledger has no cache, broker or metrics stack
+# yet, and a compose file listing services the code does not use is a promise the
+# repository cannot keep.
+#
+# The integration tests do not use this file — they start their own throwaway
+# container through Testcontainers, so tests never depend on a database someone
+# remembered to start.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ledger-postgres
+    environment:
+      POSTGRES_DB: ledger
+      POSTGRES_USER: ledger
+      # Local development only. Production credentials come from the environment
+      # or a secret store, never from a file in the repository.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledger}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ledger-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledger -d ledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  ledger-postgres-data:

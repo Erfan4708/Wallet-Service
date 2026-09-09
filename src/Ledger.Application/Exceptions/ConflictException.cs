@@ -17,4 +17,14 @@ public sealed class ConflictException : Exception
         : base(message)
     {
     }
+
+    /// <remarks>
+    /// Used when a lower layer detects the conflict — a database rejecting a
+    /// duplicate key, for example — so the original failure is preserved for the
+    /// log while the client is told only that there was a conflict.
+    /// </remarks>
+    public ConflictException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
 }

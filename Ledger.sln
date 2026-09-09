@@ -21,6 +21,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ledger.Application.Tests", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ledger.Api.Tests", "tests\Ledger.Api.Tests\Ledger.Api.Tests.csproj", "{AD71B167-438B-49F5-93D5-FBB9744B74EC}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ledger.Infrastructure.Tests", "tests\Ledger.Infrastructure.Tests\Ledger.Infrastructure.Tests.csproj", "{BDDB32B4-258E-41AD-AA7C-3CADF1104942}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -58,6 +60,10 @@ Global
 		{AD71B167-438B-49F5-93D5-FBB9744B74EC}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{AD71B167-438B-49F5-93D5-FBB9744B74EC}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{AD71B167-438B-49F5-93D5-FBB9744B74EC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BDDB32B4-258E-41AD-AA7C-3CADF1104942}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BDDB32B4-258E-41AD-AA7C-3CADF1104942}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BDDB32B4-258E-41AD-AA7C-3CADF1104942}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BDDB32B4-258E-41AD-AA7C-3CADF1104942}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{9AC39DA5-F678-407D-80D5-F18C896895D2} = {FF3C7C02-FE52-461E-8AF5-F36BECFE8710}
@@ -67,5 +73,6 @@ Global
 		{97E770B6-9126-40C7-9186-3C5703047A26} = {F766D082-2475-49C5-8130-AD38D5458097}
 		{DAB64B23-C6BB-4D18-8EE8-F124AE36464C} = {F766D082-2475-49C5-8130-AD38D5458097}
 		{AD71B167-438B-49F5-93D5-FBB9744B74EC} = {F766D082-2475-49C5-8130-AD38D5458097}
+		{BDDB32B4-258E-41AD-AA7C-3CADF1104942} = {F766D082-2475-49C5-8130-AD38D5458097}
 	EndGlobalSection
 EndGlobal

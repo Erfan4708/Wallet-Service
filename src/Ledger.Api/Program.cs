@@ -11,7 +11,7 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
 // The composition root, and the only place that knows every layer exists.
 builder.Services.AddApplication();
-builder.Services.AddInfrastructure();
+builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
 

@@ -36,6 +36,27 @@ public sealed class Account
         Balance = balance;
     }
 
+    /// <summary>
+    /// Only for the persistence layer's materializer.
+    /// </summary>
+    /// <remarks>
+    /// An object-relational mapper rebuilds an object from a row without going
+    /// through the domain's factory, and it cannot pass <see cref="Balance"/> to
+    /// a constructor because that value is reconstructed from its own columns.
+    /// It therefore needs a constructor it can call with nothing and populate
+    /// afterwards.
+    /// <para>
+    /// This concedes nothing to the domain's invariants. The constructor is
+    /// private, so no caller outside this class can reach it; the only route to
+    /// a new account remains <see cref="Open"/>, and the only route to a changed
+    /// balance remains <see cref="Credit"/> and <see cref="Debit"/>. It also
+    /// introduces no dependency: there is no attribute, no base class and no
+    /// package reference here, so the domain still compiles with no knowledge
+    /// that a database exists.
+    /// </para>
+    /// </remarks>
+    private Account() => Balance = null!;
+
     public Guid Id { get; }
 
     /// <summary>

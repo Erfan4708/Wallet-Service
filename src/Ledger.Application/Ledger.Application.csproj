@@ -9,7 +9,7 @@
   <ItemGroup>
     <!-- Abstractions only: this is what AddApplication needs to exist. The
          container implementation itself is the host's concern. -->
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
   </ItemGroup>
 
 </Project>
