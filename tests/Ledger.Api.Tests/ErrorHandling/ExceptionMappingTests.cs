@@ -1,0 +1,101 @@
+using Ledger.Api.ErrorHandling;
+using Ledger.Application.Exceptions;
+using Ledger.Domain.Enums;
+using Ledger.Domain.Exceptions;
+using Ledger.Domain.ValueObjects;
+using Microsoft.AspNetCore.Http;
+
+namespace Ledger.Api.Tests.ErrorHandling;
+
+public class ExceptionMappingTests
+{
+    [Fact]
+    public void A_validation_failure_is_a_bad_request()
+    {
+        var exception = new ValidationException("AccountId", "An account identifier is required.");
+
+        var problem = ExceptionMapping.ToProblemDetails(exception);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+    }
+
+    [Fact]
+    public void A_validation_failure_reports_the_individual_errors()
+    {
+        var exception = new ValidationException("AccountId", "An account identifier is required.");
+
+        var problem = ExceptionMapping.ToProblemDetails(exception);
+
+        var errors = Assert.IsAssignableFrom<IReadOnlyDictionary<string, string[]>>(problem.Extensions["errors"]);
+        Assert.Equal(["An account identifier is required."], errors["AccountId"]);
+    }
+
+    [Fact]
+    public void A_missing_resource_is_not_found()
+    {
+        var problem = ExceptionMapping.ToProblemDetails(new NotFoundException("Account", Guid.Empty));
+
+        Assert.Equal(StatusCodes.Status404NotFound, problem.Status);
+    }
+
+    [Fact]
+    public void A_conflicting_request_is_a_conflict()
+    {
+        var problem = ExceptionMapping.ToProblemDetails(new ConflictException("Account already exists."));
+
+        Assert.Equal(StatusCodes.Status409Conflict, problem.Status);
+        Assert.Equal("Account already exists.", problem.Detail);
+    }
+
+    // A well-formed request refused by a business rule is 422, not 400: the
+    // client sent nothing malformed, so telling them "bad request" would send
+    // them looking for a mistake that is not there.
+    [Theory]
+    [MemberData(nameof(DomainExceptions))]
+    public void A_broken_business_rule_is_unprocessable(DomainException exception)
+    {
+        var problem = ExceptionMapping.ToProblemDetails(exception);
+
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, problem.Status);
+        Assert.Equal(exception.Message, problem.Detail);
+    }
+
+    public static TheoryData<DomainException> DomainExceptions() => new()
+    {
+        new CurrencyMismatchException(Currency.USD, Currency.EUR),
+        new InsufficientFundsException(
+            Guid.Empty,
+            Money.Zero(Currency.USD),
+            new Money(10m, Currency.USD)),
+    };
+
+    [Fact]
+    public void An_unrecognised_exception_is_an_internal_error()
+    {
+        var problem = ExceptionMapping.ToProblemDetails(new InvalidOperationException("boom"));
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, problem.Status);
+    }
+
+    // The response for an unexpected failure must describe nothing about the
+    // internals: not the message, not the exception type, not a stack trace.
+    // Those go to the log, where operators can see them and attackers cannot.
+    [Fact]
+    public void An_unrecognised_exception_leaks_nothing_about_the_failure()
+    {
+        const string secret = "Server=db;Password=hunter2";
+
+        var problem = ExceptionMapping.ToProblemDetails(new InvalidOperationException(secret));
+
+        Assert.Null(problem.Detail);
+        Assert.DoesNotContain(secret, problem.Title);
+        Assert.DoesNotContain("InvalidOperationException", problem.Title);
+        Assert.Empty(problem.Extensions);
+    }
+
+    [Fact]
+    public void Mapping_requires_an_exception()
+    {
+        Assert.Throws<ArgumentNullException>(() => ExceptionMapping.ToProblemDetails(null!));
+    }
+}

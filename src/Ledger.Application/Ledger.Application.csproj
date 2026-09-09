@@ -1,7 +1,15 @@
-<Project Sdk="Microsoft.NET.Sdk"><!-- TargetFramework, Nullable and ImplicitUsings are set centrally in Directory.Build.props -->
+<Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- TargetFramework, Nullable and ImplicitUsings are set centrally in Directory.Build.props -->
 
   <ItemGroup>
     <ProjectReference Include="..\Ledger.Domain\Ledger.Domain.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Abstractions only: this is what AddApplication needs to exist. The
+         container implementation itself is the host's concern. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.1" />
+  </ItemGroup>
+
 </Project>

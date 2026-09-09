@@ -1,8 +1,10 @@
-<Project Sdk="Microsoft.NET.Sdk.Web"><!-- TargetFramework, Nullable and ImplicitUsings are set centrally in Directory.Build.props -->
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <!-- TargetFramework, Nullable and ImplicitUsings are set centrally in Directory.Build.props -->
 
   <ItemGroup>
     <ProjectReference Include="..\Ledger.Application\Ledger.Application.csproj" />
     <ProjectReference Include="..\Ledger.Infrastructure\Ledger.Infrastructure.csproj" />
   </ItemGroup>
+
 </Project>
