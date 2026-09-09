@@ -38,6 +38,18 @@ public static class ExceptionMapping
             ValidationException validation => Validation(validation),
             NotFoundException notFound => Problem(StatusCodes.Status404NotFound, "Not found.", notFound.Message),
             ConflictException conflict => Problem(StatusCodes.Status409Conflict, "Conflict.", conflict.Message),
+
+            // A state conflict rather than a rule violation: the request was
+            // sound, but the world moved. 409 tells the client to look again.
+            TransactionAlreadyReversedException reversed =>
+                Problem(StatusCodes.Status409Conflict, "Conflict.", reversed.Message),
+
+            // This one should be unreachable. The transaction aggregate cannot
+            // produce an unbalanced set, so seeing it means the defect is ours,
+            // not the caller's, and it must not be dressed up as a client error.
+            UnbalancedTransactionException =>
+                Problem(StatusCodes.Status500InternalServerError, UnexpectedErrorTitle, detail: null),
+
             DomainException domain => Problem(StatusCodes.Status422UnprocessableEntity, "Business rule violated.", domain.Message),
 
             // Everything else is a defect rather than an outcome the client can

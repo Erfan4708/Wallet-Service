@@ -1,6 +1,8 @@
 using Ledger.Application.Accounts.CreateAccount;
 using Ledger.Application.Accounts.GetAccount;
+using Ledger.Application.Ledger;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Ledger.Application;
 
@@ -25,6 +27,17 @@ public static class DependencyInjection
         // are already isolated through the repository and unit-of-work seams.
         services.AddScoped<CreateAccountHandler>();
         services.AddScoped<GetAccountHandler>();
+        services.AddScoped<GetAccountStatementHandler>();
+
+        services.AddScoped<DepositHandler>();
+        services.AddScoped<WithdrawHandler>();
+        services.AddScoped<TransferHandler>();
+        services.AddScoped<ReverseTransactionHandler>();
+
+        // The clock is an input, not something the code reaches for. Registering
+        // it here keeps every use case a pure function of what it is given, and
+        // lets a test decide what "now" means.
+        services.TryAddSingleton(TimeProvider.System);
 
         return services;
     }

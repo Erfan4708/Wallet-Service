@@ -116,13 +116,17 @@ public class ModelMappingTests
         Assert.Contains("ck_accounts_currency_is_known", names);
     }
 
-    // Indexes are not free: each one is written on every insert and update. The
-    // two current access patterns both find an account by its primary key, so
-    // any additional index would cost writes to serve a query nobody makes.
+    // Indexes are not free: each one is written on every insert and update.
+    // Accounts are found by primary key everywhere except the settlement lookup,
+    // which needs the system key, so that is the only secondary index earned.
     [Fact]
-    public void No_index_exists_beyond_the_primary_key()
+    public void The_only_secondary_index_on_accounts_is_the_system_key_lookup()
     {
-        Assert.Empty(AccountType().GetIndexes());
+        var indexes = AccountType().GetIndexes().ToList();
+
+        var index = Assert.Single(indexes);
+        Assert.Equal("ux_accounts_system_key", index.GetDatabaseName());
+        Assert.True(index.IsUnique);
     }
 
     [Fact]
@@ -140,6 +144,8 @@ public class ModelMappingTests
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
 
-        Assert.Equal(["balance_amount", "balance_currency", "id"], columns);
+        Assert.Equal(
+            ["account_type", "balance_amount", "balance_currency", "created_at", "id", "system_key"],
+            columns);
     }
 }

@@ -2,6 +2,7 @@ using System.Globalization;
 using Ledger.Application.Accounts.CreateAccount;
 using Ledger.Application.Accounts.GetAccount;
 using Ledger.Application.Exceptions;
+using Ledger.Application.Ledger;
 using Ledger.Domain.Entities;
 using Ledger.Domain.Enums;
 using Ledger.Domain.ValueObjects;
@@ -68,13 +69,9 @@ public class AccountPersistenceTests : IAsyncLifetime
     [RequiresDockerFact]
     public async Task A_balance_changed_by_the_domain_is_persisted()
     {
-        await using (var writeContext = _postgres.CreateContext())
+        await using (var host = new LedgerHost(_postgres.CreateContext()))
         {
-            var account = Account.Open(AccountId, Currency.USD);
-            account.Credit(new Money(250.75m, Currency.USD));
-
-            await new AccountRepository(writeContext).AddAsync(account);
-            await new UnitOfWork(writeContext).SaveChangesAsync();
+            await host.OpenWalletAsync(AccountId, Currency.USD, funding: 250.75m);
         }
 
         await using var readContext = _postgres.CreateContext();
@@ -173,13 +170,9 @@ public class AccountPersistenceTests : IAsyncLifetime
     {
         var expected = decimal.Parse(amount, CultureInfo.InvariantCulture);
 
-        await using (var writeContext = _postgres.CreateContext())
+        await using (var host = new LedgerHost(_postgres.CreateContext()))
         {
-            var account = Account.Open(AccountId, Currency.USD);
-            account.Credit(new Money(expected, Currency.USD));
-
-            await new AccountRepository(writeContext).AddAsync(account);
-            await new UnitOfWork(writeContext).SaveChangesAsync();
+            await host.OpenWalletAsync(AccountId, Currency.USD, funding: expected);
         }
 
         await using var readContext = _postgres.CreateContext();
@@ -192,16 +185,17 @@ public class AccountPersistenceTests : IAsyncLifetime
     [RequiresDockerFact]
     public async Task Accumulating_cents_and_storing_the_total_does_not_drift()
     {
-        await using (var writeContext = _postgres.CreateContext())
+        await using (var host = new LedgerHost(_postgres.CreateContext()))
         {
-            var account = Account.Open(AccountId, Currency.USD);
+            await host.OpenWalletAsync(AccountId, Currency.USD);
+
+            // A hundred separate deposits, each its own balanced transaction, so
+            // the drift being tested is the database's rather than one addition's.
             for (var i = 0; i < 100; i++)
             {
-                account.Credit(new Money(0.01m, Currency.USD));
+                await host.Deposit.HandleAsync(
+                    new DepositCommand(Guid.NewGuid(), AccountId, 0.01m, Currency.USD));
             }
-
-            await new AccountRepository(writeContext).AddAsync(account);
-            await new UnitOfWork(writeContext).SaveChangesAsync();
         }
 
         await using var readContext = _postgres.CreateContext();
@@ -258,7 +252,7 @@ public class AccountPersistenceTests : IAsyncLifetime
         await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
         await connection.OpenAsync();
 
-        await using var command = new NpgsqlCommand("SELECT COUNT(*) FROM accounts", connection);
+        await using var command = new NpgsqlCommand("SELECT COUNT(*) FROM accounts WHERE account_type = 'Wallet'", connection);
 
         return Convert.ToInt32(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
     }

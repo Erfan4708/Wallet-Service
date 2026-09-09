@@ -48,7 +48,24 @@ internal sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
             // It encodes a wallet's rule specifically. An overdraft or credit
             // account is *supposed* to go negative, so introducing one means
             // revisiting this constraint rather than working around it.
-            table.HasCheckConstraint("ck_accounts_balance_not_negative", "balance_amount >= 0");
+            // A wallet holds a customer's money and may never go negative. A
+            // system account is the platform's position against the outside
+            // world, where a negative balance is the normal state: it is how much
+            // value has been issued into wallets. Introducing an overdraft
+            // product means revisiting this, not working around it.
+            table.HasCheckConstraint(
+                "ck_accounts_balance_not_negative",
+                "account_type = 'System' OR balance_amount >= 0");
+
+            table.HasCheckConstraint(
+                "ck_accounts_type_is_known",
+                "account_type IN ('Wallet', 'System')");
+
+            // A system account is meaningless without its key, and a wallet must
+            // not have one.
+            table.HasCheckConstraint(
+                "ck_accounts_system_key_matches_type",
+                "(account_type = 'System') = (system_key IS NOT NULL)");
 
             table.HasCheckConstraint(
                 "ck_accounts_currency_is_known",
@@ -83,12 +100,37 @@ internal sealed class AccountConfiguration : IEntityTypeConfiguration<Account>
                 .IsRequired();
         });
 
+        builder.Property(account => account.Type)
+            .HasColumnName("account_type")
+            .HasConversion(type => type.ToString(), value => Enum.Parse<AccountType>(value))
+            .HasColumnType("character varying(16)")
+            .IsRequired();
+
+        builder.Property(account => account.SystemKey)
+            .HasColumnName("system_key")
+            .HasMaxLength(64);
+
+        builder.Property<DateTimeOffset>("CreatedAt")
+            .HasColumnName("created_at")
+            .HasDefaultValueSql("now()")
+            .ValueGeneratedOnAdd()
+            .IsRequired();
+
+        builder.HasIndex(account => account.SystemKey)
+            .HasDatabaseName("ux_accounts_system_key")
+            .IsUnique()
+            .HasFilter("system_key IS NOT NULL");
+
         builder.Navigation(account => account.Balance).IsRequired();
 
-        // No secondary indexes. Both current access patterns — creating an
-        // account and reading one — look the account up by its primary key,
-        // which is already indexed. There is no owner column to index because
-        // the domain has no owner concept, and indexes for ledger queries belong
-        // with the ledger schema that does not exist yet.
+        // Beyond the primary key and the system-account lookup there are no
+        // indexes here: every access path finds an account by its identifier.
+        //
+        // The unique key on (id, currency) below carries no information the
+        // primary key lacks. It exists so that ledger_entries can point a
+        // composite foreign key at it, which is what makes posting a USD entry
+        // to a EUR account impossible at the storage layer rather than merely
+        // checked in code. That constraint is added in the migration, because it
+        // spans an owned type's column and EF cannot express it here.
     }
 }

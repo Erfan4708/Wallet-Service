@@ -2,4 +2,12 @@
 
   <!-- TargetFramework, Nullable and ImplicitUsings are set centrally in Directory.Build.props -->
 
+  <ItemGroup>
+    <!-- Account.Credit and Account.Debit are internal so that only
+         LedgerTransaction can move a balance. The domain's own tests need to
+         reach them to test the account rules in isolation; nothing else does,
+         and no production assembly is granted access. -->
+    <InternalsVisibleTo Include="Ledger.Domain.Tests" />
+  </ItemGroup>
+
 </Project>

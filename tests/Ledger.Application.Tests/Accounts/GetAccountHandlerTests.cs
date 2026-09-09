@@ -31,8 +31,10 @@ public class GetAccountHandlerTests
     [Fact]
     public async Task Reports_the_current_balance()
     {
-        var account = Account.Open(AccountId, Currency.USD);
-        account.Credit(new Money(125.50m, Currency.USD));
+        // Funded through a real deposit rather than by setting a balance:
+        // Account.Credit is internal to the domain now, so a balance can only
+        // exist because ledger entries put it there.
+        var account = LedgerScenario.FundedWallet(AccountId, Currency.USD, 125.50m);
         _accounts.Seed(account);
 
         var summary = await _handler.HandleAsync(new GetAccountQuery(AccountId));

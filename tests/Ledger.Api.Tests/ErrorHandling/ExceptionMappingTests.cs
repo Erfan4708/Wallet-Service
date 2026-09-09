@@ -67,7 +67,33 @@ public class ExceptionMappingTests
             Guid.Empty,
             Money.Zero(Currency.USD),
             new Money(10m, Currency.USD)),
+        new SameAccountTransferException(Guid.Empty),
+        new AccountTypeMismatchException(Guid.Empty, AccountType.Wallet, AccountType.System),
     };
+
+    // A state conflict, not a rule violation: the request was sound but the world
+    // moved on. 409 tells the client to look again; 422 would send them hunting
+    // for a mistake in their request that is not there.
+    [Fact]
+    public void Reversing_an_already_reversed_transaction_is_a_conflict()
+    {
+        var problem = ExceptionMapping.ToProblemDetails(
+            new TransactionAlreadyReversedException(Guid.Empty));
+
+        Assert.Equal(StatusCodes.Status409Conflict, problem.Status);
+    }
+
+    // This one should be unreachable, so it must not be dressed up as a client
+    // error. An unbalanced transaction means the defect is ours.
+    [Fact]
+    public void An_unbalanced_transaction_is_reported_as_an_internal_error_without_detail()
+    {
+        var problem = ExceptionMapping.ToProblemDetails(
+            new UnbalancedTransactionException(Guid.Empty, entryCount: 1));
+
+        Assert.Equal(StatusCodes.Status500InternalServerError, problem.Status);
+        Assert.Null(problem.Detail);
+    }
 
     [Fact]
     public void An_unrecognised_exception_is_an_internal_error()

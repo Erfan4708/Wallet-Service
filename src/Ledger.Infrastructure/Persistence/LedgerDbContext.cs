@@ -21,6 +21,10 @@ public sealed class LedgerDbContext : DbContext
 
     public DbSet<Account> Accounts => Set<Account>();
 
+    public DbSet<LedgerTransaction> LedgerTransactions => Set<LedgerTransaction>();
+
+    public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

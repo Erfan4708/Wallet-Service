@@ -30,10 +30,12 @@ namespace Ledger.Domain.Entities;
 /// </remarks>
 public sealed class Account
 {
-    private Account(Guid id, Money balance)
+    private Account(Guid id, AccountType type, Money balance, string? systemKey)
     {
         Id = id;
+        Type = type;
         Balance = balance;
+        SystemKey = systemKey;
     }
 
     /// <summary>
@@ -60,13 +62,29 @@ public sealed class Account
     public Guid Id { get; }
 
     /// <summary>
+    /// What the account is for, which decides whether it may go negative.
+    /// </summary>
+    public AccountType Type { get; }
+
+    /// <summary>
+    /// The stable name of a system account, or <see langword="null"/> for a wallet.
+    /// </summary>
+    public string? SystemKey { get; }
+
+    /// <summary>
     /// The current balance.
     /// </summary>
     /// <remarks>
-    /// Readable but not assignable from outside. Every change has to go through
-    /// <see cref="Credit"/> or <see cref="Debit"/>, which is what makes the
-    /// "a balance may not go negative" rule enforceable rather than merely
-    /// documented.
+    /// Readable but not assignable from outside, and the two methods that can
+    /// change it are <c>internal</c> — reachable only from
+    /// <see cref="LedgerTransaction"/>. A balance therefore cannot move without
+    /// ledger entries recording why, which is what turns "the entries are the
+    /// source of truth" from a claim into something the compiler enforces.
+    /// <para>
+    /// This value is a materialised projection of the account's entries, written
+    /// in the same database transaction as they are. It is never stale, and if it
+    /// ever disagrees with <c>SUM(entries)</c> the entries win.
+    /// </para>
     /// </remarks>
     public Money Balance { get; private set; }
 
@@ -79,12 +97,42 @@ public sealed class Account
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="currency"/> is not a defined currency.</exception>
     public static Account Open(Guid id, Currency currency)
     {
+        EnsureIdentifier(id);
+
+        return new Account(id, AccountType.Wallet, Money.Zero(currency), systemKey: null);
+    }
+
+    /// <summary>
+    /// Opens a system account: the ledger's counterparty for money entering or
+    /// leaving the platform.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="Open"/> because the two are not interchangeable.
+    /// A system account is permitted to go negative, so creating one has to be a
+    /// deliberate act rather than a flag someone can pass to the ordinary
+    /// factory by accident.
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="id"/> is empty, or <paramref name="systemKey"/> is blank.
+    /// </exception>
+    public static Account OpenSystem(Guid id, Currency currency, string systemKey)
+    {
+        EnsureIdentifier(id);
+
+        if (string.IsNullOrWhiteSpace(systemKey))
+        {
+            throw new ArgumentException("A system account requires a key.", nameof(systemKey));
+        }
+
+        return new Account(id, AccountType.System, Money.Zero(currency), systemKey);
+    }
+
+    private static void EnsureIdentifier(Guid id)
+    {
         if (id == Guid.Empty)
         {
             throw new ArgumentException("An account requires an identifier.", nameof(id));
         }
-
-        return new Account(id, Money.Zero(currency));
     }
 
     /// <summary>
@@ -98,7 +146,7 @@ public sealed class Account
     /// <exception cref="CurrencyMismatchException">
     /// <paramref name="amount"/> is in a different currency to the account.
     /// </exception>
-    public void Credit(Money amount)
+    internal void Credit(Money amount)
     {
         EnsurePositiveAmountInAccountCurrency(amount);
 
@@ -116,11 +164,15 @@ public sealed class Account
     /// The balance is smaller than <paramref name="amount"/>. The balance is left
     /// untouched: a rejected operation must not apply partially.
     /// </exception>
-    public void Debit(Money amount)
+    internal void Debit(Money amount)
     {
         EnsurePositiveAmountInAccountCurrency(amount);
 
-        if (Balance < amount)
+        // A wallet holds a customer's money and may never go negative. A system
+        // account is the platform's own position against the outside world, and a
+        // negative balance there is the normal, meaningful state: it is how much
+        // value has been issued into wallets.
+        if (Type == AccountType.Wallet && Balance < amount)
         {
             throw new InsufficientFundsException(Id, Balance, amount);
         }

@@ -13,11 +13,15 @@ namespace Ledger.Infrastructure.Tests;
 /// a wrong column type there long before it shows up as a wrong number.
 /// </remarks>
 [Collection(PostgresCollection.Name)]
-public class SchemaTests
+public class SchemaTests : IAsyncLifetime
 {
     private readonly PostgresFixture _postgres;
 
     public SchemaTests(PostgresFixture postgres) => _postgres = postgres;
+
+    public Task InitializeAsync() => _postgres.ResetAsync();
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [RequiresDockerFact]
     public async Task Migrations_create_the_accounts_table()
@@ -62,14 +66,34 @@ public class SchemaTests
         Assert.Equal(["19,4"], details);
     }
 
+    // Only the system key may be absent, and only because a wallet has none —
+    // a check constraint ties its presence to the account type, so "nullable"
+    // here does not mean "optional".
     [RequiresDockerFact]
-    public async Task Every_column_is_required()
+    public async Task Only_the_system_key_is_nullable()
     {
         var nullable = await QueryStringsAsync(
             "SELECT column_name FROM information_schema.columns " +
             "WHERE table_name = 'accounts' AND is_nullable = 'YES'");
 
-        Assert.Empty(nullable);
+        Assert.Equal(["system_key"], nullable);
+    }
+
+    [RequiresDockerFact]
+    public async Task No_ledger_column_is_nullable_except_the_optional_references()
+    {
+        var nullable = await QueryStringsAsync(
+            "SELECT table_name || '.' || column_name FROM information_schema.columns " +
+            "WHERE table_name IN ('ledger_entries', 'ledger_transactions') " +
+            "AND is_nullable = 'YES' ORDER BY 1");
+
+        Assert.Equal(
+            [
+                "ledger_transactions.external_reference",
+                "ledger_transactions.idempotency_key",
+                "ledger_transactions.reverses_transaction_id",
+            ],
+            nullable);
     }
 
     [RequiresDockerFact]
@@ -92,10 +116,24 @@ public class SchemaTests
 
         var failure = await Assert.ThrowsAsync<PostgresException>(() =>
             context.Database.ExecuteSqlRawAsync(
-                "INSERT INTO accounts (id, balance_amount, balance_currency) " +
-                "VALUES (gen_random_uuid(), -1, 'USD')"));
+                "INSERT INTO accounts (id, account_type, balance_amount, balance_currency) " +
+                "VALUES (gen_random_uuid(), 'Wallet', -1, 'USD')"));
 
         Assert.Equal("23514", failure.SqlState); // check_violation
+    }
+
+    // The mirror of the rule above, and the reason the check is conditional
+    // rather than blanket: a system account's negative balance is how much value
+    // the platform has issued into wallets.
+    [RequiresDockerFact]
+    public async Task The_database_permits_a_system_account_to_go_negative()
+    {
+        await using var context = _postgres.CreateContext();
+
+        var affected = await context.Database.ExecuteSqlRawAsync(
+            "UPDATE accounts SET balance_amount = -500 WHERE system_key = 'SETTLEMENT:USD'");
+
+        Assert.Equal(1, affected);
     }
 
     [RequiresDockerFact]
@@ -105,8 +143,8 @@ public class SchemaTests
 
         var failure = await Assert.ThrowsAsync<PostgresException>(() =>
             context.Database.ExecuteSqlRawAsync(
-                "INSERT INTO accounts (id, balance_amount, balance_currency) " +
-                "VALUES (gen_random_uuid(), 0, 'XXX')"));
+                "INSERT INTO accounts (id, account_type, balance_amount, balance_currency) " +
+                "VALUES (gen_random_uuid(), 'Wallet', 0, 'XXX')"));
 
         Assert.Equal("23514", failure.SqlState);
     }

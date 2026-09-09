@@ -19,7 +19,8 @@ Account balance is stored, not derived from ledger entries.
 
 ### Status
 
-Accepted, and expected to be revisited when ledger entries exist.
+Accepted. Completed by ADR-005, which makes the relationship between the balance
+and the entries explicit now that the entries exist.
 
 ### Context
 
@@ -121,7 +122,7 @@ PostgreSQL persistence via EF Core, configured entirely outside the domain.
 
 ### Status
 
-Accepted.
+Accepted. Extended by ADR-005, which adds database triggers to the schema.
 
 ### Context
 
@@ -231,3 +232,192 @@ reordering them cannot change the meaning of stored rows.
 - The currency column is human-readable in `psql` and in a database dump.
 - A currency added to the enum must also be added to the check constraint in a
   migration.
+
+---
+
+## ADR-005
+
+### Title
+
+Double-entry ledger with system accounts, signed amounts, and a single aggregate
+that owns every balance change.
+
+### Status
+
+Accepted.
+
+### Context
+
+A wallet service has to record why every balance is what it is, and prove that no
+operation created or destroyed money. Recording a deposit as a credit to a wallet
+cannot do that: the money arrives from nowhere, the ledger cannot sum to zero, and
+the strongest assertion the system could make about itself becomes unavailable.
+
+The rule that entries must balance spans several entries, which is the definition
+of an aggregate boundary. Left outside one, it holds only where a caller
+remembers it.
+
+### Decision
+
+- **Every movement has a counterparty.** A deposit debits a system settlement
+  account and credits a wallet; a withdrawal is the mirror. Wallets may never go
+  negative; system accounts are expected to, and the amount is meaningful — it is
+  how much value the platform has issued.
+- **Signed amounts in one column.** Positive increases the account's balance,
+  negative decreases it. The invariant is then `SUM(amount) = 0` per transaction.
+- **`LedgerTransaction` is an aggregate root and the only thing that can move a
+  balance.** `LedgerEntry` has no public constructor, and `Account.Credit` and
+  `Account.Debit` are `internal` to the domain. No sequence of public calls
+  anywhere in the solution produces a lone entry, or a balance change without one.
+- **Corrections are reversals.** A correcting transaction negates the original;
+  nothing is edited or deleted, and a transaction may be reversed at most once.
+- **One currency per transaction**, enforced structurally by composite foreign
+  keys from each entry to its account's currency and its transaction's.
+- **Domain events** are plain records raised by the aggregate. Infrastructure
+  drains them when saving, which is where the outbox will write its messages —
+  inside the same transaction, so "the money moved" and "the world was told"
+  commit together.
+- The balance stays stored, as ADR-001 decided, but **the entries are now the
+  source of truth** and the balance is a projection of them written in the same
+  transaction. Where they disagree the entries win, and a reconciliation query
+  proves they agree.
+
+### Alternatives Considered
+
+**Separate debit and credit columns**, the classic accounting presentation.
+Rejected: it turns the balance check into a comparison of two aggregates, breaks
+the composability of negation for reversals, and admits rows with both columns
+populated or neither.
+
+**Single-sided deposits, with no system accounts.** Much smaller, and rejected
+outright: the global zero-sum invariant would be unassertable, which removes the
+one test that proves the ledger is correct.
+
+**Validating the balance in a service rather than an aggregate.** Rejected: the
+invalid state stays representable, and every new code path is another chance to
+forget the check.
+
+**A full chart of accounts with asset/liability nature.** This is a wallet ledger,
+not a general ledger for statutory reporting. Adding an account nature later is
+additive; the entries themselves would not change.
+
+### Consequences
+
+- Money can be proven neither created nor destroyed, by summing one column.
+- Setting up a test balance now requires a real deposit, because conjuring one is
+  no longer possible. Three existing tests had to change, which is the point.
+- Every currency needs a settlement account before it can be used; these are
+  seeded by migration, because a deposit is impossible without one.
+- Foreign exchange will need the composite foreign keys relaxed and a per-currency
+  balance check in their place.
+
+---
+
+## ADR-006
+
+### Title
+
+Pessimistic row locks, acquired in a deterministic order, under READ COMMITTED.
+
+### Status
+
+Accepted.
+
+### Context
+
+Two concurrent withdrawals from an account holding just enough for one must not
+both succeed. A domain invariant cannot prevent that: it holds within one process
+and says nothing about two requests arriving in the same millisecond.
+
+### Decision
+
+Every ledger use case runs inside an explicit database transaction, and takes
+`SELECT ... FOR UPDATE` on each account it will change **before** reading any
+balance. Locks are acquired one row at a time, sorted by identifier. Isolation
+stays READ COMMITTED.
+
+The lock is issued as a statement of its own, and the entity is read afterwards.
+Composing `FOR UPDATE` into a query the ORM then shapes was observed not to hold
+the lock in practice: concurrent transactions read the same stale balance and the
+projection drifted from the ledger. Locking and reading as two explicit steps
+removes the ambiguity, and the repository refuses to lock at all when no
+transaction is open, because a lock taken in autocommit is released before the
+caller can use it.
+
+### Alternatives Considered
+
+**SERIALIZABLE isolation.** Correct, but it buys protection against phantoms we do
+not have — the rows the decision depends on are known and can be locked directly —
+and it costs a retry loop on every operation.
+
+**Optimistic concurrency with a version column.** Better under low contention, but
+a lost update here is a customer's money being wrong, and under contention it
+degrades into a livelock of retries. PostgreSQL's `xmin` can provide this later
+with no schema change if the trade-off shifts.
+
+**Locking in argument order.** Rejected: a transfer A to B and a transfer B to A
+would each hold what the other wants, and PostgreSQL would resolve it by killing
+one. Sorting makes the deadlock impossible rather than merely unlikely.
+
+### Consequences
+
+- Concurrent withdrawals serialise; exactly as many succeed as there are funds for.
+- Every movement on a busy account queues behind the others. Balance sharding is
+  the known answer if that ever matters, and it is not needed yet.
+- Deposits and withdrawals in one currency all contend on that currency's
+  settlement account, which is the hottest row in the system by construction.
+
+---
+
+## ADR-007
+
+### Title
+
+Idempotency through a unique key on the transaction, checked inside the same
+transaction that moves the money.
+
+### Status
+
+Accepted.
+
+### Context
+
+A client whose request times out will retry, and must not be charged twice. The
+check and the money movement have to be one atomic act: a check performed
+separately is a race two retries can both pass.
+
+### Decision
+
+`ledger_transactions.idempotency_key` carries a partial unique index. A use case
+looks for an existing transaction under the key **after** acquiring its account
+locks, and returns that transaction's result if it finds one. A replay is a
+success that returns the original result, not a conflict.
+
+Requests with the same key necessarily touch the same accounts, so the locks
+serialise them and the second one's read sees the first one's committed
+transaction. The unique index remains the ultimate authority if that check is ever
+bypassed.
+
+A key reused with different parameters is rejected with a conflict rather than
+being given the original's result, which would report success for an operation
+that never happened.
+
+### Alternatives Considered
+
+**A separate `idempotency_keys` table storing serialized responses.** More
+general, and the right addition when the HTTP layer needs a retry to return the
+same *body* — including for requests that failed validation. Rejected as the core
+mechanism because the guarantee that matters is atomicity with the money
+movement, which a unique index on the transaction gives directly.
+
+**Checking before taking the locks.** Rejected: it leaves a window in which both
+attempts find nothing and both proceed.
+
+### Consequences
+
+- A retried request moves money exactly once, proven under real concurrency.
+- Because the outbox will be written in the same transaction, a deduplicated retry
+  emits no second event; idempotency and at-least-once delivery compose without
+  extra machinery.
+- The request fingerprint is deliberately small — kind, currency and amount. A
+  fuller one would hash the whole request and store it beside the key.

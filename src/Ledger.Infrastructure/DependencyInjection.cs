@@ -48,6 +48,7 @@ public static class DependencyInjection
         services.AddDbContext<LedgerDbContext>(options => options.UseNpgsql(connectionString));
 
         services.AddScoped<IAccountRepository, AccountRepository>();
+        services.AddScoped<ILedgerTransactionRepository, LedgerTransactionRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         return services;

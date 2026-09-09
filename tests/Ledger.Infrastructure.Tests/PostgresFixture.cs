@@ -65,15 +65,39 @@ public sealed class PostgresFixture : IAsyncLifetime
     /// a second context has an empty change tracker, so anything it returns
     /// genuinely came back from PostgreSQL.
     /// </remarks>
-    public LedgerDbContext CreateContext() =>
-        new(new DbContextOptionsBuilder<LedgerDbContext>()
-            .UseNpgsql(ConnectionString)
-            .Options);
+    public LedgerDbContext CreateContext()
+    {
+        var options = new DbContextOptionsBuilder<LedgerDbContext>().UseNpgsql(ConnectionString);
 
+        // Set LEDGER_SQL_LOG=1 to see the statements a test actually issues.
+        if (Environment.GetEnvironmentVariable("LEDGER_SQL_LOG") is "1")
+        {
+            options.LogTo(Console.WriteLine, Microsoft.Extensions.Logging.LogLevel.Information)
+                .EnableSensitiveDataLogging();
+        }
+
+        return new LedgerDbContext(options.Options);
+    }
+
+    /// <summary>
+    /// Returns the database to the state the migrations left it in.
+    /// </summary>
+    /// <remarks>
+    /// The system accounts are seeded by a migration, so they are part of the
+    /// schema rather than test data: they are zeroed, not deleted. Wiping them
+    /// would leave a database in which no deposit could ever be recorded, which
+    /// is not a state production can reach.
+    /// </remarks>
     public async Task ResetAsync()
     {
         await using var context = CreateContext();
-        await context.Database.ExecuteSqlRawAsync("TRUNCATE TABLE accounts");
+
+        await context.Database.ExecuteSqlRawAsync(
+            """
+            TRUNCATE TABLE ledger_entries, ledger_transactions RESTART IDENTITY;
+            DELETE FROM accounts WHERE account_type = 'Wallet';
+            UPDATE accounts SET balance_amount = 0 WHERE account_type = 'System';
+            """);
     }
 
     public async Task DisposeAsync()
