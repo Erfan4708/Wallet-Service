@@ -1,0 +1,21 @@
+# Minimal, and deliberately so: one job scraping the service's own /metrics.
+# Alerting rules, recording rules and remote write are deployment concerns that
+# belong with a real Prometheus, not with a local development stack.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: ledger-api
+    metrics_path: /metrics
+    static_configs:
+      # The Compose service name. Prometheus and the API share a network, so the
+      # container port is used here, not the port published to the host.
+      - targets: ["api:8080"]
+        labels:
+          service: ledger-api
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

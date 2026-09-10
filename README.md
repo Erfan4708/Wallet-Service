@@ -11,9 +11,11 @@ concurrency control, idempotency and auditability. There is deliberately no UI.
 
 🚧 **In progress.** A double-entry ledger records every movement, accounts
 persist to PostgreSQL through EF Core, and deposits, withdrawals, transfers and
-reversals are exposed over HTTP, and the service reports on itself through
-structured logs, traces and Prometheus metrics. **Not yet built:** an outbox and
-message broker, a deployed metrics stack, and CI.
+reversals are exposed over HTTP, the service reports on itself through structured
+logs, traces and Prometheus metrics, and the whole stack — API, PostgreSQL,
+Redis, RabbitMQ, Prometheus, Grafana — runs from a single `docker compose up`.
+Ledger transactions publish events through a transactional outbox. **Not yet
+built:** message consumers, and load testing.
 
 | Area | Status |
 | --- | --- |
@@ -26,9 +28,10 @@ message broker, a deployed metrics stack, and CI.
 | Concurrency control & idempotency | ✅ Done |
 | HTTP endpoints | ✅ Done |
 | Observability (logs, traces, metrics, health) | ✅ Done |
-| Outbox + message broker | ⬜ Not started |
-| Prometheus / Grafana deployment | ⬜ Not started |
-| CI | ⬜ Not started |
+| Containerisation, Compose stack, CI | ✅ Done |
+| Transactional outbox + RabbitMQ | ✅ Done |
+| Message consumers | ⬜ Not started |
+| Load testing & performance work | ⬜ Not started |
 
 ## Architecture
 
@@ -122,6 +125,39 @@ Concurrency is handled with `SELECT … FOR UPDATE` taken in identifier order
 before any balance is read, under READ COMMITTED. The reasoning for all of this is
 in [ADR-005, ADR-006 and ADR-007](docs/DECISIONS.md).
 
+### Events, and why there is an outbox
+
+Committing the ledger and then publishing to a broker is a dual write with no
+correct failure mode: crash in between and the money moved with nobody told;
+publish first and a rollback announces a transaction that never happened. So the
+intent to publish is written **into the same transaction as the money**:
+
+```text
+BEGIN
+  ledger_transactions + ledger_entries + balances
+  outbox_messages
+COMMIT                          <- one atomic act
+
+claim ─▶ publish ─▶ mark published    (a background worker, separately)
+```
+
+A background publisher claims pending rows with `FOR UPDATE SKIP LOCKED` plus a
+lease, commits the claim immediately, then publishes with RabbitMQ publisher
+confirms and marks the row only once the broker has confirmed. No database
+transaction is held open while waiting for the broker.
+
+**Delivery is at-least-once. Exactly-once is not claimed.** A crash between the
+broker confirming and the row being marked republishes the message, so consumers
+must be idempotent — every message carries a stable `MessageId` derived from the
+transaction identifier. Message payloads carry identifiers, a kind and a currency;
+never amounts or balances. See [ADR-009](docs/DECISIONS.md).
+
+**A broker outage is not a financial outage.** Transactions keep committing with
+their outbox rows, and the backlog drains when RabbitMQ returns. Neither RabbitMQ
+nor Redis is a hard readiness dependency for that reason: readiness reports
+`Degraded` and still returns 200, so the instance keeps serving traffic it can
+serve correctly.
+
 ### Observability
 
 The service emits three signals, all correlated by the W3C trace identifier that
@@ -144,6 +180,10 @@ request in all three.
 | `GET /health/live` | Liveness. Checks **nothing external** — a database outage must not make an orchestrator restart every instance. |
 | `GET /health/ready` | Readiness. Checks PostgreSQL through the application's own `DbContext`; returns 503 when it is unreachable. |
 | `GET /metrics` | Prometheus scrape endpoint. |
+
+Readiness distinguishes what the API needs from what it merely uses: PostgreSQL
+failing makes it **unhealthy** (503), while Redis or RabbitMQ failing makes it
+**degraded** (still 200).
 
 ```bash
 curl -i localhost:18080/health/live      # 200, and a trace-id header
@@ -266,7 +306,35 @@ LEDGER_REQUIRE_DOCKER=1 dotnet test
 To run the API against a database, start one and supply a connection string:
 
 ```bash
-docker compose up -d postgres
+docker compose up -d --build             # the whole stack
+```
+
+| Service | Local URL | Purpose |
+| --- | --- | --- |
+| Ledger API | http://localhost:18080 | the service |
+| PostgreSQL | `localhost:55432` | source of truth for all financial state |
+| Redis | `localhost:16379` | infrastructure only; nothing depends on it yet |
+| RabbitMQ | `localhost:45672` | broker for outbox events |
+| RabbitMQ management | http://localhost:45673 | queue inspection (development only) |
+| Prometheus | http://localhost:19090 | scrapes the API's `/metrics` |
+| Grafana | http://localhost:13000 | provisioned "Ledger Service" dashboard |
+
+Every port and credential is environment-driven — see `.env.example`, and copy it
+to `.env` to override. The defaults are local development values; nothing in this
+repository is a secret, and a deployment supplies its own through its environment
+or secret store.
+
+Ports are deliberately unconventional because Windows reserves scattered TCP
+ranges for Hyper-V and WSL2, and 5432 and 5672 both commonly fall inside one.
+
+Migrations run as a one-shot `migrator` service before the API starts, from the
+same image, so no replica starts against a schema that is not there and no two
+replicas race to create it.
+
+To run the API from source against the Compose dependencies instead:
+
+```bash
+docker compose up -d postgres redis rabbitmq
 dotnet run --project src/Ledger.Api      # listens on http://localhost:18080
 ```
 

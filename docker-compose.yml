@@ -1,38 +1,177 @@
-# Local development database only.
+# A production-like local environment: the API, its datastores, the broker, and
+# the metrics stack that scrapes it.
 #
-# Deliberately just PostgreSQL: the ledger has no cache, broker or metrics stack
-# yet, and a compose file listing services the code does not use is a promise the
-# repository cannot keep.
+# Every credential and port is environment-driven with a development default, so
+# nothing here is a secret and nothing has to be edited to run it. Copy
+# .env.example to .env to override anything.
 #
-# The integration tests do not use this file — they start their own throwaway
-# container through Testcontainers, so tests never depend on a database someone
-# remembered to start.
+# The integration tests do not use this file. They start their own throwaway
+# containers through Testcontainers, so a test run never depends on a stack
+# someone remembered to start.
+#
+# Host ports are deliberately unconventional. Windows reserves scattered TCP
+# ranges for Hyper-V and WSL2 -- 5432 and 5672 both commonly fall inside one --
+# and Docker then fails to bind them with a permissions error that looks like a
+# Docker fault. See `netsh interface ipv4 show excludedportrange protocol=tcp`.
+
+name: ledger
 
 services:
   postgres:
     image: postgres:16-alpine
     container_name: ledger-postgres
     environment:
-      POSTGRES_DB: ledger
-      POSTGRES_USER: ledger
-      # Local development only. Production credentials come from the environment
-      # or a secret store, never from a file in the repository.
+      POSTGRES_DB: ${POSTGRES_DB:-ledger}
+      POSTGRES_USER: ${POSTGRES_USER:-ledger}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledger}
     ports:
-      # Published on 55432 rather than the conventional 5432 because Windows
-      # reserves scattered TCP ranges for Hyper-V/WSL2 — 5432 commonly falls
-      # inside one, and Docker then fails to bind it with a permissions error
-      # that has nothing to do with Docker. Check with:
-      #   netsh interface ipv4 show excludedportrange protocol=tcp
-      # Override with POSTGRES_PORT=5432 on a machine where that port is free.
+      # Exposed so `dotnet run` and `dotnet ef` can reach it from the host.
       - "${POSTGRES_PORT:-55432}:5432"
     volumes:
       - ledger-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ledger -d ledger"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ledger} -d ${POSTGRES_DB:-ledger}"]
       interval: 5s
       timeout: 5s
+      retries: 10
+    networks: [ledger]
+
+  redis:
+    image: redis:7-alpine
+    container_name: ledger-redis
+    # No persistence configured on purpose: nothing in the ledger stores anything
+    # in Redis that it cannot rebuild. PostgreSQL is the source of truth for every
+    # balance, entry and transaction, and it must stay that way.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [ledger]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: ledger-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ledger}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-ledger}
+    ports:
+      - "${RABBITMQ_PORT:-45672}:5672"
+      # The management UI. Useful locally for watching the outbox drain; it is a
+      # development convenience and would not be published in a deployment.
+      - "${RABBITMQ_MANAGEMENT_PORT:-45673}:15672"
+    volumes:
+      - ledger-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks: [ledger]
+
+  # Applies migrations once, then exits. The API waits for it to succeed, so no
+  # replica ever starts against a schema that is not there yet, and no two
+  # replicas race to create it.
+  migrator:
+    image: ${LEDGER_IMAGE:-ledger-api:local}
+    build:
+      context: .
+    container_name: ledger-migrator
+    command: ["--migrate"]
+    environment:
+      ConnectionStrings__LedgerDatabase: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-ledger};Username=${POSTGRES_USER:-ledger};Password=${POSTGRES_PASSWORD:-ledger}"
+      # The migrator has no traffic to observe and no messages to publish.
+      Outbox__PublisherEnabled: "false"
+      Observability__Metrics__PrometheusEndpoint: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [ledger]
+
+  api:
+    image: ${LEDGER_IMAGE:-ledger-api:local}
+    build:
+      context: .
+    container_name: ledger-api
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_HTTP_PORTS: "8080"
+      # Service names, not localhost: inside the network each container resolves
+      # the others by the name Compose gives them.
+      ConnectionStrings__LedgerDatabase: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-ledger};Username=${POSTGRES_USER:-ledger};Password=${POSTGRES_PASSWORD:-ledger}"
+      Redis__ConnectionString: "redis:6379"
+      RabbitMq__Host: "rabbitmq"
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: ${RABBITMQ_USER:-ledger}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD:-ledger}
+      Observability__ServiceName: "ledger-api"
+    ports:
+      - "${API_PORT:-18080}:8080"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      # Liveness, not readiness: a container is unhealthy when the process is
+      # broken, not when a dependency it can survive without is.
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
       retries: 5
+      start_period: 15s
+    networks: [ledger]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: ledger-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ledger-prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-19090}:9090"
+    depends_on:
+      - api
+    networks: [ledger]
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: ledger-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      # Local development only. Anonymous sign-up and analytics are off.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      # Provisioned from files, so the datasource and dashboard exist on first
+      # start rather than being clicked together by hand and lost on the next
+      # `docker compose down -v`.
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ledger-grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-13000}:3000"
+    depends_on:
+      - prometheus
+    networks: [ledger]
+
+networks:
+  ledger:
+    driver: bridge
 
 volumes:
   ledger-postgres-data:
+  ledger-rabbitmq-data:
+  ledger-prometheus-data:
+  ledger-grafana-data:

@@ -544,3 +544,129 @@ code or `unknown`. `ledger.failure_reason` is one of a fixed list including
 
 Standard HTTP, ASP.NET Core and .NET runtime metrics come from the OpenTelemetry
 instrumentation packages and are not redefined here.
+
+---
+
+## ADR-009
+
+### Title
+
+Transactional outbox for messaging, with at-least-once delivery.
+
+### Status
+
+Accepted.
+
+### Context
+
+Other systems need to know when the ledger records a transaction. The obvious
+implementation — commit the financial change, then publish to the broker — is a
+**dual write**, and it has no correct failure mode:
+
+- crash after the commit and before the publish, and the money has moved but
+  nothing downstream will ever learn of it;
+- publish before the commit, and a rollback leaves the world told about a
+  transaction that never happened;
+- wrap the broker call inside the database transaction, and a slow broker holds
+  account row locks open, so a messaging problem becomes a financial outage.
+
+There is no ordering of two independent systems that makes this atomic.
+
+### Decision
+
+The intent to publish is written **into the same database transaction** as the
+money:
+
+```text
+BEGIN
+  ledger_transactions + ledger_entries + account balances
+  outbox_messages
+COMMIT                         <- one atomic act
+
+  ... later, and separately ...
+
+claim  -> publish -> mark published
+```
+
+`UnitOfWork.SaveChangesAsync` turns the domain events raised during the unit of
+work into `outbox_messages` rows before it saves, so they are part of the same
+statement batch and the same transaction. Either both are committed or neither
+is.
+
+A background `OutboxPublisher` then drains the table. Claiming is one statement
+that commits immediately:
+
+```sql
+UPDATE outbox_messages
+   SET attempts = attempts + 1, next_attempt_at = now() + lease
+ WHERE id IN (SELECT id FROM outbox_messages
+               WHERE published_at IS NULL AND next_attempt_at <= now()
+               ORDER BY id LIMIT :batch
+                 FOR UPDATE SKIP LOCKED)
+RETURNING ...;
+```
+
+`SKIP LOCKED` lets several workers drain the same table without contending, and
+pushing `next_attempt_at` forward leases the row: no other worker takes it while
+this one publishes, and if the worker dies the lease simply expires. **No
+database transaction is held open while waiting for the broker.**
+
+Publication uses RabbitMQ publisher confirms. A message is marked published only
+after the broker has confirmed it.
+
+### Delivery semantics: at-least-once, and not more
+
+The sequence is *claim and commit → publish and confirm → mark published*. A
+crash in the window between the broker confirming and the mark committing leaves
+the row pending, and the message is published again once its lease expires.
+
+**This is unavoidable.** Closing the window would require the broker and the
+database to commit together, which they cannot. Delivery is therefore
+at-least-once, and **exactly-once is not claimed anywhere**.
+
+Consumers must be idempotent. Every message carries a `MessageId` derived from
+the ledger transaction identifier rather than generated randomly, so the same
+transaction always produces the same message identifier — which is what makes a
+repeat recognisable. A test reproduces the duplicate window deliberately, because
+it is a property to be designed against rather than a bug to be fixed.
+
+### Retry behaviour
+
+A failed attempt records the error, increments the attempt count and schedules
+the next try with exponential backoff, capped. A failing batch stops after the
+first failure: if the broker is down the rest would fail too, and burning their
+attempt counts and backoff for nothing only slows the eventual recovery.
+
+### Alternatives Considered
+
+**Publish directly from the use case.** Simplest, and rejected: it is exactly the
+dual write above.
+
+**Change data capture from the WAL.** Removes the publisher entirely and gives
+stronger ordering guarantees, at the cost of another piece of infrastructure to
+run and understand. Worth revisiting at a volume this service is nowhere near.
+
+**A distributed transaction across PostgreSQL and RabbitMQ.** Rejected. Two-phase
+commit is available in principle and is operationally miserable, and RabbitMQ's
+support for it is not something to depend on.
+
+**Holding `SELECT … FOR UPDATE` open across the publish.** Simpler code, and
+rejected because it couples database lock duration to broker latency.
+
+### Consequences
+
+- A broker outage never rolls back a financial transaction. Transactions keep
+  committing with their outbox rows; the backlog grows and drains on recovery.
+  This is verified by a test and by hand against the Compose stack.
+- RabbitMQ is therefore **not** a hard readiness dependency. Nor is Redis, which
+  nothing reads or writes. Both are registered as *degradable*: readiness reports
+  `Degraded` and still returns 200, because an instance that refused traffic for
+  either would be refusing requests it can serve correctly.
+- The outbox table grows without bound. Nothing prunes published rows yet; that
+  is a maintenance job, and it needs a retention decision first.
+- Message payloads carry identifiers, a kind and a currency — **never amounts or
+  balances**. A broker fans messages out to every service with a binding, and
+  they sit in backlogs and dead-letter queues indefinitely.
+- Ordering is per-message, not global. Nothing guarantees a consumer sees two
+  transactions in the order they were committed, only that it eventually sees
+  both.

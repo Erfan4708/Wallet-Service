@@ -94,7 +94,7 @@ public sealed class PostgresFixture : IAsyncLifetime
 
         await context.Database.ExecuteSqlRawAsync(
             """
-            TRUNCATE TABLE ledger_entries, ledger_transactions RESTART IDENTITY;
+            TRUNCATE TABLE ledger_entries, ledger_transactions, outbox_messages RESTART IDENTITY;
             DELETE FROM accounts WHERE account_type = 'Wallet';
             UPDATE accounts SET balance_amount = 0 WHERE account_type = 'System';
             """);

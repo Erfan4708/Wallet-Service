@@ -50,6 +50,10 @@ public class HealthCheckTests
         return await health.CheckHealthAsync(registration => registration.Tags.Contains(ReadyTag));
     }
 
+    // The database check is the one that decides whether the instance can serve
+    // traffic at all, so it is asserted directly rather than through the overall
+    // status -- which also reflects the optional dependencies and is allowed to
+    // be degraded without meaning the API is unusable.
     [RequiresDockerFact]
     public async Task Readiness_is_healthy_against_a_real_database()
     {
@@ -57,10 +61,12 @@ public class HealthCheckTests
 
         var report = await CheckReadinessAsync(provider);
 
-        Assert.Equal(HealthStatus.Healthy, report.Status);
         Assert.Equal(HealthStatus.Healthy, report.Entries["postgres"].Status);
+        Assert.NotEqual(HealthStatus.Unhealthy, report.Status);
     }
 
+    // A database outage is the one dependency failure that must take the instance
+    // out of the load balancer: without it the API cannot answer anything.
     [RequiresDockerFact]
     public async Task Readiness_is_unhealthy_when_the_database_cannot_be_reached()
     {
@@ -70,6 +76,7 @@ public class HealthCheckTests
         var report = await CheckReadinessAsync(provider);
 
         Assert.Equal(HealthStatus.Unhealthy, report.Status);
+        Assert.Equal(HealthStatus.Unhealthy, report.Entries["postgres"].Status);
     }
 
     // The check has to use the same DbContext the application serves requests
@@ -83,9 +90,49 @@ public class HealthCheckTests
 
         var report = await CheckReadinessAsync(provider);
 
-        var check = Assert.Single(report.Entries);
-        Assert.Equal("postgres", check.Key);
-        Assert.Contains("db", check.Value.Tags);
+        var check = report.Entries["postgres"];
+        Assert.Contains("db", check.Tags);
+
+        // The database is the only dependency whose absence makes the instance
+        // unable to do its job; the others are registered as degradable.
+        Assert.Equal(
+            ["postgres"],
+            report.Entries
+                .Where(entry => entry.Value.Tags.Contains("db"))
+                .Select(entry => entry.Key));
+    }
+
+    // The deliberate decision, stated as a test: with the database healthy and
+    // both optional dependencies gone, readiness degrades but does not fail, so
+    // the instance keeps serving traffic. Redis is used by nothing, and a broker
+    // outage only delays outbox publication -- neither is a reason to refuse
+    // requests the instance can answer correctly.
+    [RequiresDockerFact]
+    public async Task Readiness_degrades_but_does_not_fail_when_only_the_optional_dependencies_are_down()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:LedgerDatabase"] = _postgres.ConnectionString,
+                ["Redis:ConnectionString"] = "127.0.0.1:1,connectTimeout=500,abortConnect=false",
+                ["RabbitMq:Host"] = "127.0.0.1",
+                ["RabbitMq:Port"] = "1",
+                ["Outbox:PublisherEnabled"] = "false",
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddInfrastructure(configuration);
+
+        await using var provider = services.BuildServiceProvider();
+
+        var report = await CheckReadinessAsync(provider);
+
+        Assert.Equal(HealthStatus.Degraded, report.Status);
+        Assert.Equal(HealthStatus.Healthy, report.Entries["postgres"].Status);
+        Assert.Equal(HealthStatus.Degraded, report.Entries["rabbitmq"].Status);
+        Assert.Equal(HealthStatus.Degraded, report.Entries["redis"].Status);
     }
 
     // Liveness must never depend on the database, so nothing carrying the

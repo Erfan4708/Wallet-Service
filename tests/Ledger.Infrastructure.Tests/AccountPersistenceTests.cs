@@ -125,13 +125,13 @@ public class AccountPersistenceTests : IAsyncLifetime
         await using (var first = _postgres.CreateContext())
         {
             await new AccountRepository(first).AddAsync(Account.Open(AccountId, Currency.USD));
-            await new UnitOfWork(first).SaveChangesAsync();
+            await new UnitOfWork(first, TimeProvider.System).SaveChangesAsync();
         }
 
         await using var second = _postgres.CreateContext();
         await new AccountRepository(second).AddAsync(Account.Open(AccountId, Currency.EUR));
 
-        await Assert.ThrowsAsync<ConflictException>(() => new UnitOfWork(second).SaveChangesAsync());
+        await Assert.ThrowsAsync<ConflictException>(() => new UnitOfWork(second, TimeProvider.System).SaveChangesAsync());
     }
 
     // Atomicity of a single save: two accounts are registered, the second
@@ -142,7 +142,7 @@ public class AccountPersistenceTests : IAsyncLifetime
         await using (var seed = _postgres.CreateContext())
         {
             await new AccountRepository(seed).AddAsync(Account.Open(AccountId, Currency.USD));
-            await new UnitOfWork(seed).SaveChangesAsync();
+            await new UnitOfWork(seed, TimeProvider.System).SaveChangesAsync();
         }
 
         await using (var context = _postgres.CreateContext())
@@ -152,7 +152,7 @@ public class AccountPersistenceTests : IAsyncLifetime
             await repository.AddAsync(Account.Open(OtherAccountId, Currency.USD));
             await repository.AddAsync(Account.Open(AccountId, Currency.EUR));
 
-            await Assert.ThrowsAsync<ConflictException>(() => new UnitOfWork(context).SaveChangesAsync());
+            await Assert.ThrowsAsync<ConflictException>(() => new UnitOfWork(context, TimeProvider.System).SaveChangesAsync());
         }
 
         await using var reader = _postgres.CreateContext();
@@ -216,7 +216,7 @@ public class AccountPersistenceTests : IAsyncLifetime
         await using (var writeContext = _postgres.CreateContext())
         {
             await new AccountRepository(writeContext).AddAsync(Account.Open(AccountId, currency));
-            await new UnitOfWork(writeContext).SaveChangesAsync();
+            await new UnitOfWork(writeContext, TimeProvider.System).SaveChangesAsync();
         }
 
         await using var readContext = _postgres.CreateContext();
@@ -234,7 +234,7 @@ public class AccountPersistenceTests : IAsyncLifetime
         await using (var writeContext = _postgres.CreateContext())
         {
             await new AccountRepository(writeContext).AddAsync(Account.Open(AccountId, Currency.EUR));
-            await new UnitOfWork(writeContext).SaveChangesAsync();
+            await new UnitOfWork(writeContext, TimeProvider.System).SaveChangesAsync();
         }
 
         await using var connection = new NpgsqlConnection(_postgres.ConnectionString);
@@ -248,7 +248,7 @@ public class AccountPersistenceTests : IAsyncLifetime
     }
 
     private static CreateAccountHandler HandlerFor(LedgerDbContext context) =>
-        new(new AccountRepository(context), new UnitOfWork(context), Telemetry);
+        new(new AccountRepository(context), new UnitOfWork(context, TimeProvider.System), Telemetry);
 
     private async Task<int> CountRowsAsync()
     {

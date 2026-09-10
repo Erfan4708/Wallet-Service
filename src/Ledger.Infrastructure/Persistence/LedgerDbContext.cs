@@ -1,4 +1,5 @@
 using Ledger.Domain.Entities;
+using Ledger.Infrastructure.Persistence.Outbox;
 using Microsoft.EntityFrameworkCore;
 
 namespace Ledger.Infrastructure.Persistence;
@@ -24,6 +25,8 @@ public sealed class LedgerDbContext : DbContext
     public DbSet<LedgerTransaction> LedgerTransactions => Set<LedgerTransaction>();
 
     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
+
+    internal DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

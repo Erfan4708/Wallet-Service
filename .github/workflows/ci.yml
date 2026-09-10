@@ -1,0 +1,158 @@
+name: CI
+
+# Every push and every pull request. A pipeline that only runs on merge tells you
+# about a break after it is already on the main branch.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A new push to the same branch cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    # Ubuntu runners ship with a working Docker engine, which is what
+    # Testcontainers uses. Nothing else needs provisioning: the tests start and
+    # dispose their own PostgreSQL, RabbitMQ and Redis containers, so the
+    # pipeline does not depend on services someone remembered to define here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          # The version global.json pins, so CI compiles with the same SDK a
+          # developer does.
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore Ledger.sln
+
+      - name: Build
+        # The same bar the repository builds under locally. A warning that fails
+        # a developer's build must fail CI too, or the setting means nothing.
+        run: dotnet build Ledger.sln --configuration Release --no-restore -warnaserror
+
+      - name: Test
+        env:
+          # Turns a skipped Docker-dependent test into a failure. Without this a
+          # runner without Docker would report a green build having verified
+          # none of the database, broker or cache behaviour.
+          LEDGER_REQUIRE_DOCKER: "1"
+        run: >
+          dotnet test Ledger.sln
+          --configuration Release
+          --no-build
+          --logger "trx;LogFileName=results.trx"
+          --results-directory artifacts/test-results
+
+      - name: Fail if any test was skipped
+        # Belt and braces. LEDGER_REQUIRE_DOCKER covers the container tests; this
+        # catches anything else that becomes conditionally skipped later, because
+        # "0 skipped" is a property of this repository rather than an accident.
+        run: |
+          skipped=$(grep -ho 'notExecuted="[0-9]*"' artifacts/test-results/*.trx \
+            | grep -o '[0-9]*' | paste -sd+ - | bc)
+          echo "Skipped tests: ${skipped:-0}"
+          if [ "${skipped:-0}" != "0" ]; then
+            echo "::error::${skipped} test(s) were skipped; the suite must run in full."
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: artifacts/test-results
+          retention-days: 7
+
+  docker-image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Only worth building once the code it contains is known to work.
+    needs: build-and-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Not published anywhere. This step exists to prove the Dockerfile
+          # still builds; pushing to a registry is a deployment concern and a
+          # later phase.
+          push: false
+          load: true
+          tags: ledger-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify the image starts and runs unprivileged
+        run: |
+          # No database is reachable, so the API cannot be ready -- but the
+          # process must start, and liveness must succeed regardless, which is
+          # the whole point of separating the two probes.
+          docker run -d --name ledger-ci \
+            -e ConnectionStrings__LedgerDatabase="Host=127.0.0.1;Port=1;Database=ledger;Username=none;Password=none;Timeout=1" \
+            -e Outbox__PublisherEnabled=false \
+            -p 8080:8080 ledger-api:ci
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health/live > /dev/null; then
+              echo "Liveness succeeded after ${attempt}s."
+              break
+            fi
+            if [ "$attempt" = "30" ]; then
+              docker logs ledger-ci
+              echo "::error::The image did not become live."
+              exit 1
+            fi
+            sleep 1
+          done
+
+          user=$(docker exec ledger-ci id -un)
+          echo "Container user: ${user}"
+          if [ "$user" = "root" ]; then
+            echo "::error::The image runs as root."
+            exit 1
+          fi
+
+          docker rm -f ledger-ci
+
+  compose:
+    name: Compose configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the Compose file
+        # Catches a malformed file or an unresolvable variable before anyone
+        # discovers it by trying to start the stack.
+        run: docker compose config --quiet

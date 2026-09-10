@@ -1,0 +1,12 @@
+# Provisioned rather than configured by hand, so the stack is the same on every
+# machine and survives `docker compose down -v`.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

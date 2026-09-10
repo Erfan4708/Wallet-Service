@@ -29,7 +29,7 @@ internal sealed class LedgerHost : IAsyncDisposable
 
         var accounts = new AccountRepository(context);
         var transactions = new LedgerTransactionRepository(context);
-        var unitOfWork = new UnitOfWork(context);
+        var unitOfWork = new UnitOfWork(context, TimeProvider.System);
 
         Accounts = accounts;
         Transactions = transactions;

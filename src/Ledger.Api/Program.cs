@@ -39,6 +39,17 @@ builder.Services.AddLedgerObservability(builder.Configuration);
 
 var app = builder.Build();
 
+// A one-shot migration mode, run from the same image before the API starts.
+// Letting every replica migrate on startup would have them racing to alter the
+// same schema, which EF Core takes no lock to prevent.
+if (args.Contains("--migrate", StringComparer.Ordinal))
+{
+    await app.Services.MigrateLedgerDatabaseAsync();
+    Log.CloseAndFlush();
+
+    return;
+}
+
 // Order matters, and this is the order that makes the logs honest.
 //
 // The trace header is outermost so it is attached to every response, including

@@ -1,7 +1,11 @@
 using Ledger.Application.Abstractions;
 using Ledger.Application.Exceptions;
 using Ledger.Domain.Entities;
+using System.Text.Json;
+using Ledger.Application.Messaging;
+using Ledger.Domain.Enums;
 using Ledger.Domain.Events;
+using Ledger.Infrastructure.Persistence.Outbox;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -32,12 +36,15 @@ internal sealed class UnitOfWork : IUnitOfWork
     private const string RaisedException = "P0001";
 
     private readonly LedgerDbContext _context;
+    private readonly TimeProvider _timeProvider;
 
-    public UnitOfWork(LedgerDbContext context)
+    public UnitOfWork(LedgerDbContext context, TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(timeProvider);
 
         _context = context;
+        _timeProvider = timeProvider;
     }
 
     public async Task<T> ExecuteInTransactionAsync<T>(
@@ -65,6 +72,13 @@ internal sealed class UnitOfWork : IUnitOfWork
     /// <exception cref="ConflictException">A database constraint rejected the write.</exception>
     public async Task SaveChangesAsync(CancellationToken cancellationToken = default)
     {
+        // Written *before* SaveChanges, so the outbox rows are part of the same
+        // INSERT batch and the same transaction as the ledger entries and the
+        // balances they belong to. This is the whole point of the pattern: there
+        // is no window in which the money has moved and the message has not been
+        // recorded, or the reverse.
+        DrainDomainEventsIntoOutbox();
+
         try
         {
             await _context.SaveChangesAsync(cancellationToken);
@@ -73,22 +87,27 @@ internal sealed class UnitOfWork : IUnitOfWork
         {
             throw translated;
         }
-
-        DrainDomainEvents();
     }
 
     /// <summary>
-    /// Collects the events raised by everything this unit of work saved.
+    /// Turns the events raised during this unit of work into outbox rows.
     /// </summary>
     /// <remarks>
-    /// This is the seam the outbox will occupy. When it arrives, the drained
-    /// events are serialised into an <c>outbox_messages</c> insert issued
-    /// <em>inside this same transaction</em>, which is what makes "the money
-    /// moved" and "the world was told" atomic — no dual write, no lost event, no
-    /// event for a transaction that rolled back. Until then they are cleared, so
-    /// nothing accumulates on a long-lived aggregate.
+    /// <para>
+    /// The alternative -- commit the ledger, then publish to the broker -- is a
+    /// dual write, and it has no correct failure mode. A crash after the commit
+    /// loses the message and nothing downstream ever learns the money moved; a
+    /// publish before the commit announces a transaction that may then roll back.
+    /// Recording the intent to publish in the same transaction as the money
+    /// removes the window entirely: either both are committed or neither is.
+    /// </para>
+    /// <para>
+    /// What is left is the far easier problem of getting a durably recorded
+    /// message to a broker eventually, which a background publisher can retry for
+    /// as long as it takes.
+    /// </para>
     /// </remarks>
-    private void DrainDomainEvents()
+    private void DrainDomainEventsIntoOutbox()
     {
         var aggregates = _context.ChangeTracker
             .Entries<LedgerTransaction>()
@@ -96,12 +115,59 @@ internal sealed class UnitOfWork : IUnitOfWork
             .Where(transaction => transaction.DomainEvents.Count > 0)
             .ToList();
 
+        var now = _timeProvider.GetUtcNow();
+
         foreach (var aggregate in aggregates)
         {
-            _ = aggregate.DomainEvents.ToList<IDomainEvent>();
+            foreach (var raised in aggregate.DomainEvents.ToList())
+            {
+                if (ToOutboxMessage(raised, now) is { } message)
+                {
+                    _context.OutboxMessages.Add(message);
+                }
+            }
+
             aggregate.ClearDomainEvents();
         }
     }
+
+    /// <remarks>
+    /// Mapping the domain event onto a published contract happens here, in
+    /// infrastructure, because that is where serialisation belongs and because it
+    /// lets the two shapes change independently. An event with no published
+    /// contract simply produces no row.
+    /// </remarks>
+    private static OutboxMessage? ToOutboxMessage(IDomainEvent raised, DateTimeOffset now)
+    {
+        if (raised is not LedgerTransactionRecorded recorded)
+        {
+            return null;
+        }
+
+        // Derived from the transaction identifier rather than random, so that a
+        // retried request producing the same transaction cannot produce a second
+        // message identifier -- and so a consumer's de-duplication holds even
+        // across a republication.
+        var messageId = recorded.TransactionId;
+
+        var payload = JsonSerializer.Serialize(new LedgerTransactionRecordedMessage(
+            messageId,
+            recorded.TransactionId,
+            recorded.Kind.ToString(),
+            CurrencyName(recorded.Currency),
+            recorded.OccurredAt));
+
+        return OutboxMessage.Create(
+            messageId,
+            LedgerTransactionRecordedMessage.MessageType,
+            recorded.TransactionId,
+            payload,
+            recorded.OccurredAt,
+            now);
+    }
+
+    private static string CurrencyName(Currency currency) =>
+        Enum.IsDefined(currency) ? currency.ToString() : "unknown";
 
     /// <remarks>
     /// Translated here so a database refusal crosses the boundary as something

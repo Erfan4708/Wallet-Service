@@ -1,0 +1,23 @@
+# Everything the build does not need. Keeping the context small makes the build
+# faster, and keeps local artefacts, credentials and history out of the image.
+
+**/bin/
+**/obj/
+**/.vs/
+**/*.user
+
+.git/
+.github/
+.config/
+
+tests/
+docs/
+*.md
+
+docker-compose*.yml
+Dockerfile
+.dockerignore
+.env
+.env.*
+
+deploy/
