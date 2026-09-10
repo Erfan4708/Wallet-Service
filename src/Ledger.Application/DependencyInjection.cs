@@ -1,6 +1,7 @@
 using Ledger.Application.Accounts.CreateAccount;
 using Ledger.Application.Accounts.GetAccount;
 using Ledger.Application.Ledger;
+using Ledger.Application.Observability;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -38,6 +39,11 @@ public static class DependencyInjection
         // it here keeps every use case a pure function of what it is given, and
         // lets a test decide what "now" means.
         services.TryAddSingleton(TimeProvider.System);
+
+        // Singleton because an ActivitySource and a Meter are process-wide
+        // publishers: creating one per request would leak instruments and hide
+        // the signals from anything that subscribed at start-up.
+        services.TryAddSingleton<LedgerTelemetry>();
 
         return services;
     }

@@ -1,4 +1,5 @@
 using Ledger.Application.Abstractions;
+using Ledger.Application.Observability;
 using Ledger.Application.Exceptions;
 using Ledger.Domain.Entities;
 using Ledger.Domain.Enums;
@@ -18,14 +19,20 @@ public sealed class CreateAccountHandler
 {
     private readonly IAccountRepository _accounts;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly LedgerTelemetry _telemetry;
 
-    public CreateAccountHandler(IAccountRepository accounts, IUnitOfWork unitOfWork)
+    public CreateAccountHandler(
+        IAccountRepository accounts,
+        IUnitOfWork unitOfWork,
+        LedgerTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(accounts);
         ArgumentNullException.ThrowIfNull(unitOfWork);
+        ArgumentNullException.ThrowIfNull(telemetry);
 
         _accounts = accounts;
         _unitOfWork = unitOfWork;
+        _telemetry = telemetry;
     }
 
     /// <exception cref="ValidationException">The command is malformed.</exception>
@@ -35,6 +42,9 @@ public sealed class CreateAccountHandler
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(command);
+
+        using var activity = _telemetry.StartActivity("ledger.account.open");
+        activity?.SetTag("ledger.account_id", command.AccountId);
 
         Validate(command);
 
@@ -52,6 +62,8 @@ public sealed class CreateAccountHandler
 
         await _accounts.AddAsync(account, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        _telemetry.RecordAccountOpened(command.Currency);
 
         return AccountSummary.From(account);
     }

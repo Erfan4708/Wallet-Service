@@ -19,7 +19,7 @@ public class CreateAccountHandlerTests
     {
         _accounts = new FakeAccountRepository(_callLog);
         _unitOfWork = new FakeUnitOfWork(_callLog);
-        _handler = new CreateAccountHandler(_accounts, _unitOfWork);
+        _handler = new CreateAccountHandler(_accounts, _unitOfWork, TestTelemetry.Instance);
     }
 
     [Fact]

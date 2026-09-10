@@ -7,6 +7,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets a test give its telemetry a private source name, so parallel tests
+         do not observe each other's spans and measurements. -->
+    <InternalsVisibleTo Include="Ledger.Application.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Abstractions only: this is what AddApplication needs to exist. The
          container implementation itself is the host's concern. -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />

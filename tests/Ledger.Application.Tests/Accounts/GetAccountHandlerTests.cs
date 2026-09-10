@@ -14,7 +14,7 @@ public class GetAccountHandlerTests
     private readonly FakeAccountRepository _accounts = new();
     private readonly GetAccountHandler _handler;
 
-    public GetAccountHandlerTests() => _handler = new GetAccountHandler(_accounts);
+    public GetAccountHandlerTests() => _handler = new GetAccountHandler(_accounts, TestTelemetry.Instance);
 
     [Fact]
     public async Task Returns_the_account()

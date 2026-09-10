@@ -11,8 +11,9 @@ concurrency control, idempotency and auditability. There is deliberately no UI.
 
 🚧 **In progress.** A double-entry ledger records every movement, accounts
 persist to PostgreSQL through EF Core, and deposits, withdrawals, transfers and
-reversals are exposed over HTTP. **Not yet built:** an outbox and message broker,
-observability, and CI.
+reversals are exposed over HTTP, and the service reports on itself through
+structured logs, traces and Prometheus metrics. **Not yet built:** an outbox and
+message broker, a deployed metrics stack, and CI.
 
 | Area | Status |
 | --- | --- |
@@ -24,8 +25,9 @@ observability, and CI.
 | Double-entry ledger, transfers, reversals | ✅ Done |
 | Concurrency control & idempotency | ✅ Done |
 | HTTP endpoints | ✅ Done |
+| Observability (logs, traces, metrics, health) | ✅ Done |
 | Outbox + message broker | ⬜ Not started |
-| Observability | ⬜ Not started |
+| Prometheus / Grafana deployment | ⬜ Not started |
 | CI | ⬜ Not started |
 
 ## Architecture
@@ -120,6 +122,46 @@ Concurrency is handled with `SELECT … FOR UPDATE` taken in identifier order
 before any balance is read, under READ COMMITTED. The reasoning for all of this is
 in [ADR-005, ADR-006 and ADR-007](docs/DECISIONS.md).
 
+### Observability
+
+The service emits three signals, all correlated by the W3C trace identifier that
+ASP.NET Core creates for each request:
+
+| Signal | How | Where it goes |
+| --- | --- | --- |
+| Logs | Serilog, compact JSON in production | stdout |
+| Traces | OpenTelemetry: ASP.NET Core, HttpClient, Npgsql, plus ledger spans | console exporter in development |
+| Metrics | OpenTelemetry: HTTP, runtime, plus ledger metrics | `GET /metrics`, Prometheus text format |
+
+A trace runs from the HTTP request, through the ledger operation, into the
+PostgreSQL command it waited on. The same trace identifier appears on every log
+event (`@tr`), in the `trace-id` response header, and in the `traceId` field of
+every error response — so a caller can quote one value and it will find the
+request in all three.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health/live` | Liveness. Checks **nothing external** — a database outage must not make an orchestrator restart every instance. |
+| `GET /health/ready` | Readiness. Checks PostgreSQL through the application's own `DbContext`; returns 503 when it is unreachable. |
+| `GET /metrics` | Prometheus scrape endpoint. |
+
+```bash
+curl -i localhost:18080/health/live      # 200, and a trace-id header
+curl    localhost:18080/health/ready     # 200 healthy, 503 with checks:{postgres:Unhealthy}
+curl -s localhost:18080/metrics | grep ledger_
+```
+
+**What is deliberately not measured.** No metric carries an account identifier, a
+transaction identifier or an idempotency key — one time series per account is
+unbounded growth. An unrecognised currency collapses to `unknown` rather than
+becoming a label of its own. Spans carry identifiers, because that is how a
+specific failure is found, but never amounts or balances. Custom metrics are
+listed in full in [ADR-008](docs/DECISIONS.md).
+
+Everything is configurable under `Serilog` and `Observability` in
+`appsettings.json`: minimum log levels, service name, sampling ratio, and whether
+each exporter runs.
+
 ### Error contract
 
 Every unhandled exception becomes an RFC 9457 `ProblemDetails` response through
@@ -191,7 +233,7 @@ src/
   Ledger.Domain/          domain model (Entities, ValueObjects, Exceptions, Enums, Common)
   Ledger.Application/     use cases, abstractions the outer layers implement, app errors
   Ledger.Infrastructure/  EF Core DbContext, entity configuration, migrations, repositories
-  Ledger.Api/             HTTP host, composition root, error contract
+  Ledger.Api/             HTTP host, composition root, error contract, observability
 tests/
   Ledger.Domain.Tests/
   Ledger.Application.Tests/
@@ -225,7 +267,7 @@ To run the API against a database, start one and supply a connection string:
 
 ```bash
 docker compose up -d postgres
-dotnet run --project src/Ledger.Api
+dotnet run --project src/Ledger.Api      # listens on http://localhost:18080
 ```
 
 The development database is published on **port 55432**, not the conventional

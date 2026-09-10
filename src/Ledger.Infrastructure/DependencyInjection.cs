@@ -4,6 +4,7 @@ using Ledger.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Ledger.Infrastructure;
 
@@ -50,6 +51,20 @@ public static class DependencyInjection
         services.AddScoped<IAccountRepository, AccountRepository>();
         services.AddScoped<ILedgerTransactionRepository, LedgerTransactionRepository>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+        // Readiness reuses the DbContext the application already has rather than
+        // opening a second connection of its own. A probe that checks a different
+        // connection than the one serving traffic can report healthy while every
+        // request fails -- it would be testing the wrong thing.
+        //
+        // Tagged rather than named so that liveness can exclude it: whether
+        // PostgreSQL is reachable says nothing about whether this process is
+        // alive, and restarting the process would not fix it.
+        services.AddHealthChecks()
+            .AddDbContextCheck<LedgerDbContext>(
+                name: "postgres",
+                failureStatus: HealthStatus.Unhealthy,
+                tags: ["ready", "db"]);
 
         return services;
     }

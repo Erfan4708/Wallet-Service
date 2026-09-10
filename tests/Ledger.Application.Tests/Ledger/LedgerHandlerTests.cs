@@ -27,13 +27,13 @@ public class LedgerHandlerTests
     private readonly FakeLedgerTransactionRepository _transactions = new();
     private readonly FakeUnitOfWork _unitOfWork = new();
 
-    private DepositHandler Deposit => new(_accounts, _transactions, _unitOfWork, TimeProvider.System);
+    private DepositHandler Deposit => new(_accounts, _transactions, _unitOfWork, TimeProvider.System, TestTelemetry.Instance);
 
-    private WithdrawHandler Withdraw => new(_accounts, _transactions, _unitOfWork, TimeProvider.System);
+    private WithdrawHandler Withdraw => new(_accounts, _transactions, _unitOfWork, TimeProvider.System, TestTelemetry.Instance);
 
-    private TransferHandler Transfer => new(_accounts, _transactions, _unitOfWork, TimeProvider.System);
+    private TransferHandler Transfer => new(_accounts, _transactions, _unitOfWork, TimeProvider.System, TestTelemetry.Instance);
 
-    private ReverseTransactionHandler Reverse => new(_accounts, _transactions, _unitOfWork, TimeProvider.System);
+    private ReverseTransactionHandler Reverse => new(_accounts, _transactions, _unitOfWork, TimeProvider.System, TestTelemetry.Instance);
 
     public LedgerHandlerTests() => _accounts.Seed(LedgerScenario.Settlement(Currency.USD));
 

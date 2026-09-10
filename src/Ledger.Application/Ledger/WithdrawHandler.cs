@@ -1,4 +1,5 @@
 using Ledger.Application.Abstractions;
+using Ledger.Application.Observability;
 using Ledger.Domain.Entities;
 using Ledger.Domain.Enums;
 
@@ -28,22 +29,26 @@ public sealed class WithdrawHandler
     private readonly ILedgerTransactionRepository _transactions;
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _timeProvider;
+    private readonly LedgerTelemetry _telemetry;
 
     public WithdrawHandler(
         IAccountRepository accounts,
         ILedgerTransactionRepository transactions,
         IUnitOfWork unitOfWork,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        LedgerTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(accounts);
         ArgumentNullException.ThrowIfNull(transactions);
         ArgumentNullException.ThrowIfNull(unitOfWork);
         ArgumentNullException.ThrowIfNull(timeProvider);
+        ArgumentNullException.ThrowIfNull(telemetry);
 
         _accounts = accounts;
         _transactions = transactions;
         _unitOfWork = unitOfWork;
         _timeProvider = timeProvider;
+        _telemetry = telemetry;
     }
 
     public async Task<LedgerTransactionResult> HandleAsync(
@@ -52,6 +57,25 @@ public sealed class WithdrawHandler
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        // One span and one measurement per operation, wrapped around the whole
+        // use case so that validation failures are counted too -- a request the
+        // system refused is still a request it handled.
+        return await _telemetry.TrackTransactionAsync(
+            LedgerTransactionKind.Withdrawal,
+            command.Currency,
+            activity =>
+            {
+                activity?.SetTag("ledger.account_id", command.AccountId);
+                activity?.SetTag("ledger.transaction_id", command.TransactionId);
+
+                return ExecuteAsync(command, cancellationToken);
+            });
+    }
+
+    private async Task<LedgerTransactionResult> ExecuteAsync(
+        WithdrawCommand command,
+        CancellationToken cancellationToken)
+    {
         var errors = new Dictionary<string, string[]>();
         LedgerCommandValidation.RequireIdentifier(command.TransactionId, nameof(command.TransactionId), errors);
         LedgerCommandValidation.RequireIdentifier(command.AccountId, nameof(command.AccountId), errors);

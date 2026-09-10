@@ -1,4 +1,5 @@
 using System.Globalization;
+using Ledger.Application.Observability;
 using Ledger.Application.Accounts.CreateAccount;
 using Ledger.Application.Accounts.GetAccount;
 using Ledger.Application.Exceptions;
@@ -26,6 +27,8 @@ public class AccountPersistenceTests : IAsyncLifetime
 {
     private static readonly Guid AccountId = new("aaaaaaaa-0000-0000-0000-000000000001");
     private static readonly Guid OtherAccountId = new("aaaaaaaa-0000-0000-0000-000000000002");
+
+    private static readonly LedgerTelemetry Telemetry = new();
 
     private readonly PostgresFixture _postgres;
 
@@ -58,7 +61,7 @@ public class AccountPersistenceTests : IAsyncLifetime
         }
 
         await using var readContext = _postgres.CreateContext();
-        var summary = await new GetAccountHandler(new AccountRepository(readContext))
+        var summary = await new GetAccountHandler(new AccountRepository(readContext), Telemetry)
             .HandleAsync(new GetAccountQuery(AccountId));
 
         Assert.Equal(AccountId, summary.Id);
@@ -87,7 +90,7 @@ public class AccountPersistenceTests : IAsyncLifetime
         await using var context = _postgres.CreateContext();
 
         await Assert.ThrowsAsync<NotFoundException>(() =>
-            new GetAccountHandler(new AccountRepository(context))
+            new GetAccountHandler(new AccountRepository(context), Telemetry)
                 .HandleAsync(new GetAccountQuery(OtherAccountId)));
     }
 
@@ -245,7 +248,7 @@ public class AccountPersistenceTests : IAsyncLifetime
     }
 
     private static CreateAccountHandler HandlerFor(LedgerDbContext context) =>
-        new(new AccountRepository(context), new UnitOfWork(context));
+        new(new AccountRepository(context), new UnitOfWork(context), Telemetry);
 
     private async Task<int> CountRowsAsync()
     {

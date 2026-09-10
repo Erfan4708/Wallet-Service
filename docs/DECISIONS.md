@@ -421,3 +421,126 @@ attempts find nothing and both proceed.
   extra machinery.
 - The request fingerprint is deliberately small — kind, currency and amount. A
   fuller one would hash the whole request and store it beside the key.
+
+---
+
+## ADR-008
+
+### Title
+
+Application observability: Serilog for logs, OpenTelemetry for traces and
+metrics, Prometheus for scraping.
+
+### Status
+
+Accepted.
+
+### Context
+
+A ledger is investigated after the fact. "Why did this transfer fail at 03:14",
+"is the withdrawal path slower than it was last week", and "is this instance
+serving traffic it cannot complete" are the questions that matter, and none of
+them can be answered by reading console output. They need logs that can be
+queried, traces that connect a request to the database command it waited on, and
+metrics that can be aggregated over time.
+
+The constraint that shapes the design is that this is financial data. Telemetry
+leaves the service and lands in systems with wider access than the database:
+whoever can read a dashboard can usually read every label on it. So the question
+is not only what to measure but what must never be measured.
+
+### Decision
+
+**Serilog for logging.** Log events keep their properties as data rather than
+being flattened into a sentence, which is what makes "every refused withdrawal on
+this account today" a filter rather than a grep. Output is compact JSON in
+production and human-readable text in development, both chosen by configuration.
+Serilog 3 populates `TraceId` and `SpanId` from the ambient `Activity`, so logs
+and traces share identifiers with nothing bespoke in between.
+
+**OpenTelemetry for traces and metrics.** It is the vendor-neutral standard, so
+the exporter is a deployment decision rather than a rewrite. Crucially, the
+application layer does not depend on it: it emits signals through
+`System.Diagnostics.ActivitySource` and `Meter` — base class library types —
+and the composition root decides who listens. OpenTelemetry appears in exactly
+one project.
+
+**Instrumentation lives at the composition root**, except for the ledger's own
+signals, which live in the application layer because they describe application
+concepts. `LedgerTelemetry` is injected, not static, so a test can isolate an
+instance and nothing depends on ambient global state.
+
+**Prometheus for scraping**, exposed at `/metrics` by the OpenTelemetry exporter.
+
+**Two health endpoints with different meanings.** `/health/live` checks nothing
+external; `/health/ready` checks PostgreSQL through the same `DbContext` the
+application serves requests with.
+
+**One owner for exception logging.** ASP.NET Core's `ExceptionHandlerMiddleware`
+logs every exception it routes at `Error` with a stack trace, before anything has
+decided what the exception means. That logger is silenced, and
+`GlobalExceptionHandler` takes the responsibility: unexpected failures at `Error`
+with the whole exception, expected refusals at `Debug` with only a status and a
+title.
+
+### Alternatives Considered
+
+**The built-in `ILogger` console provider.** No third-party dependency, but it
+renders a message and discards the structure, which is the property the whole
+decision rests on.
+
+**`prometheus-net` instead of the OpenTelemetry exporter.** Simpler for metrics
+alone, and rejected because it would leave traces and metrics on different
+models, with two ways to name a dimension and no shared resource identity.
+
+**Emitting metrics from the API endpoints rather than the use cases.** Would keep
+the application layer entirely free of instrumentation, and rejected because it
+measures the wrong thing: an operation invoked from anywhere but HTTP would be
+invisible, and the endpoint does not know why an operation failed.
+
+**A custom correlation identifier.** Rejected outright. ASP.NET Core already
+creates a W3C trace context per request, propagates it, and puts it on every log
+event; a parallel scheme would be a second answer to a question that already has
+one.
+
+**Logging the ledger operation's amount and balance.** Rejected. The client is
+told the amounts because it is their money; a log is a different audience.
+
+### Consequences
+
+- A trace runs from the HTTP request, through the ledger operation, into the
+  PostgreSQL command, which is what turns "this was slow" into "this waited on a
+  row lock".
+- Metric labels are a closed set. An unrecognised currency collapses to
+  `unknown` rather than becoming a label, so a caller cannot create unbounded
+  time series by sending nonsense.
+- No metric carries an account identifier, a transaction identifier or an
+  idempotency key. Spans carry identifiers, because that is how a specific
+  failure is found; they carry no amounts.
+- Silencing the framework's exception logger means that if this service's own
+  handler ever fails, its log is lost too. The exception still propagates and is
+  recorded by the server.
+- The Prometheus exporter is a pre-release package. It is the official one, and
+  the alternative was a second metrics model.
+- Deploying Prometheus, Grafana and a collector is deliberately not part of this
+  phase. The application now produces the signals; where they are stored and
+  displayed is an infrastructure concern with its own failure modes, and mixing
+  the two would mean neither is finished.
+
+### Metrics reference
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `ledger.transactions` | Counter | transactions | `ledger.operation`, `ledger.currency`, `ledger.outcome` | Every ledger operation attempted, whether it succeeded or was refused. Rate and error ratio per operation. |
+| `ledger.transaction.failures` | Counter | transactions | `ledger.operation`, `ledger.failure_reason` | Refusals broken down by cause, from a closed set. Answers *why* the failure rate moved. |
+| `ledger.transaction.duration` | Histogram | seconds | `ledger.operation`, `ledger.outcome` | End-to-end time of an operation, including waiting for row locks. Latency percentiles and lock contention. |
+| `ledger.accounts.opened` | Counter | accounts | `ledger.currency` | Accounts opened. Growth, and a sanity check against the accounts table. |
+
+`ledger.operation` is one of `deposit`, `withdrawal`, `transfer`, `reversal`.
+`ledger.outcome` is `success` or `failure`. `ledger.currency` is an ISO 4217
+code or `unknown`. `ledger.failure_reason` is one of a fixed list including
+`validation`, `insufficient_funds`, `conflict`, `not_found`,
+`currency_mismatch`, `already_reversed` and `error`.
+
+Standard HTTP, ASP.NET Core and .NET runtime metrics come from the OpenTelemetry
+instrumentation packages and are not redefined here.

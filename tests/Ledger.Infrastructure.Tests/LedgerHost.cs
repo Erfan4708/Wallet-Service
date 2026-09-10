@@ -1,4 +1,5 @@
 using Ledger.Application.Accounts.CreateAccount;
+using Ledger.Application.Observability;
 using Ledger.Application.Accounts.GetAccount;
 using Ledger.Application.Ledger;
 using Ledger.Domain.Enums;
@@ -20,6 +21,7 @@ namespace Ledger.Infrastructure.Tests;
 internal sealed class LedgerHost : IAsyncDisposable
 {
     private readonly LedgerDbContext _context;
+    private readonly LedgerTelemetry _telemetry = new();
 
     internal LedgerHost(LedgerDbContext context)
     {
@@ -32,13 +34,13 @@ internal sealed class LedgerHost : IAsyncDisposable
         Accounts = accounts;
         Transactions = transactions;
 
-        CreateAccount = new CreateAccountHandler(accounts, unitOfWork);
-        GetAccount = new GetAccountHandler(accounts);
-        Statement = new GetAccountStatementHandler(accounts, transactions);
-        Deposit = new DepositHandler(accounts, transactions, unitOfWork, TimeProvider.System);
-        Withdraw = new WithdrawHandler(accounts, transactions, unitOfWork, TimeProvider.System);
-        Transfer = new TransferHandler(accounts, transactions, unitOfWork, TimeProvider.System);
-        Reverse = new ReverseTransactionHandler(accounts, transactions, unitOfWork, TimeProvider.System);
+        CreateAccount = new CreateAccountHandler(accounts, unitOfWork, _telemetry);
+        GetAccount = new GetAccountHandler(accounts, _telemetry);
+        Statement = new GetAccountStatementHandler(accounts, transactions, _telemetry);
+        Deposit = new DepositHandler(accounts, transactions, unitOfWork, TimeProvider.System, _telemetry);
+        Withdraw = new WithdrawHandler(accounts, transactions, unitOfWork, TimeProvider.System, _telemetry);
+        Transfer = new TransferHandler(accounts, transactions, unitOfWork, TimeProvider.System, _telemetry);
+        Reverse = new ReverseTransactionHandler(accounts, transactions, unitOfWork, TimeProvider.System, _telemetry);
     }
 
     internal AccountRepository Accounts { get; }
@@ -81,5 +83,9 @@ internal sealed class LedgerHost : IAsyncDisposable
     internal async Task<decimal> BalanceOfAsync(Guid accountId) =>
         (await GetAccount.HandleAsync(new GetAccountQuery(accountId))).Balance;
 
-    public ValueTask DisposeAsync() => _context.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        _telemetry.Dispose();
+        await _context.DisposeAsync();
+    }
 }

@@ -1,4 +1,5 @@
 using Ledger.Application.Abstractions;
+using Ledger.Application.Observability;
 using Ledger.Application.Exceptions;
 using Ledger.Domain.Entities;
 using Ledger.Domain.Enums;
@@ -25,22 +26,26 @@ public sealed class TransferHandler
     private readonly ILedgerTransactionRepository _transactions;
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _timeProvider;
+    private readonly LedgerTelemetry _telemetry;
 
     public TransferHandler(
         IAccountRepository accounts,
         ILedgerTransactionRepository transactions,
         IUnitOfWork unitOfWork,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        LedgerTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(accounts);
         ArgumentNullException.ThrowIfNull(transactions);
         ArgumentNullException.ThrowIfNull(unitOfWork);
         ArgumentNullException.ThrowIfNull(timeProvider);
+        ArgumentNullException.ThrowIfNull(telemetry);
 
         _accounts = accounts;
         _transactions = transactions;
         _unitOfWork = unitOfWork;
         _timeProvider = timeProvider;
+        _telemetry = telemetry;
     }
 
     public async Task<LedgerTransactionResult> HandleAsync(
@@ -49,6 +54,26 @@ public sealed class TransferHandler
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        // One span and one measurement per operation, wrapped around the whole
+        // use case so that validation failures are counted too -- a request the
+        // system refused is still a request it handled.
+        return await _telemetry.TrackTransactionAsync(
+            LedgerTransactionKind.Transfer,
+            command.Currency,
+            activity =>
+            {
+                activity?.SetTag("ledger.source_account_id", command.SourceAccountId);
+                activity?.SetTag("ledger.destination_account_id", command.DestinationAccountId);
+                activity?.SetTag("ledger.transaction_id", command.TransactionId);
+
+                return ExecuteAsync(command, cancellationToken);
+            });
+    }
+
+    private async Task<LedgerTransactionResult> ExecuteAsync(
+        TransferCommand command,
+        CancellationToken cancellationToken)
+    {
         var errors = new Dictionary<string, string[]>();
         LedgerCommandValidation.RequireIdentifier(command.TransactionId, nameof(command.TransactionId), errors);
         LedgerCommandValidation.RequireIdentifier(command.SourceAccountId, nameof(command.SourceAccountId), errors);
@@ -115,22 +140,26 @@ public sealed class ReverseTransactionHandler
     private readonly ILedgerTransactionRepository _transactions;
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _timeProvider;
+    private readonly LedgerTelemetry _telemetry;
 
     public ReverseTransactionHandler(
         IAccountRepository accounts,
         ILedgerTransactionRepository transactions,
         IUnitOfWork unitOfWork,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        LedgerTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(accounts);
         ArgumentNullException.ThrowIfNull(transactions);
         ArgumentNullException.ThrowIfNull(unitOfWork);
         ArgumentNullException.ThrowIfNull(timeProvider);
+        ArgumentNullException.ThrowIfNull(telemetry);
 
         _accounts = accounts;
         _transactions = transactions;
         _unitOfWork = unitOfWork;
         _timeProvider = timeProvider;
+        _telemetry = telemetry;
     }
 
     public async Task<LedgerTransactionResult> HandleAsync(
@@ -139,6 +168,25 @@ public sealed class ReverseTransactionHandler
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        // One span and one measurement per operation, wrapped around the whole
+        // use case so that validation failures are counted too -- a request the
+        // system refused is still a request it handled.
+        return await _telemetry.TrackTransactionAsync(
+            LedgerTransactionKind.Reversal,
+            knownCurrency: null,
+            activity =>
+            {
+                activity?.SetTag("ledger.original_transaction_id", command.OriginalTransactionId);
+                activity?.SetTag("ledger.transaction_id", command.TransactionId);
+
+                return ExecuteAsync(command, cancellationToken);
+            });
+    }
+
+    private async Task<LedgerTransactionResult> ExecuteAsync(
+        ReverseTransactionCommand command,
+        CancellationToken cancellationToken)
+    {
         var errors = new Dictionary<string, string[]>();
         LedgerCommandValidation.RequireIdentifier(command.TransactionId, nameof(command.TransactionId), errors);
         LedgerCommandValidation.RequireIdentifier(command.OriginalTransactionId, nameof(command.OriginalTransactionId), errors);

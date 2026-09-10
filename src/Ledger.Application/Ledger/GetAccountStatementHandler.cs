@@ -1,4 +1,5 @@
 using Ledger.Application.Abstractions;
+using Ledger.Application.Observability;
 using Ledger.Application.Exceptions;
 using Ledger.Domain.Entities;
 using Ledger.Domain.Enums;
@@ -37,13 +38,20 @@ public sealed class GetAccountStatementHandler
     private readonly IAccountRepository _accounts;
     private readonly ILedgerTransactionRepository _transactions;
 
-    public GetAccountStatementHandler(IAccountRepository accounts, ILedgerTransactionRepository transactions)
+    private readonly LedgerTelemetry _telemetry;
+
+    public GetAccountStatementHandler(
+        IAccountRepository accounts,
+        ILedgerTransactionRepository transactions,
+        LedgerTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(accounts);
         ArgumentNullException.ThrowIfNull(transactions);
+        ArgumentNullException.ThrowIfNull(telemetry);
 
         _accounts = accounts;
         _transactions = transactions;
+        _telemetry = telemetry;
     }
 
     public async Task<AccountStatement> HandleAsync(
@@ -51,6 +59,9 @@ public sealed class GetAccountStatementHandler
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
+
+        using var activity = _telemetry.StartActivity("ledger.account.statement");
+        activity?.SetTag("ledger.account_id", query.AccountId);
 
         var errors = new Dictionary<string, string[]>();
         LedgerCommandValidation.RequireIdentifier(query.AccountId, nameof(query.AccountId), errors);

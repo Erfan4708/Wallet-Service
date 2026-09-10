@@ -1,4 +1,5 @@
 using Ledger.Application.Abstractions;
+using Ledger.Application.Observability;
 using Ledger.Application.Exceptions;
 using Ledger.Domain.Entities;
 
@@ -16,11 +17,15 @@ public sealed class GetAccountHandler
 {
     private readonly IAccountRepository _accounts;
 
-    public GetAccountHandler(IAccountRepository accounts)
+    private readonly LedgerTelemetry _telemetry;
+
+    public GetAccountHandler(IAccountRepository accounts, LedgerTelemetry telemetry)
     {
         ArgumentNullException.ThrowIfNull(accounts);
+        ArgumentNullException.ThrowIfNull(telemetry);
 
         _accounts = accounts;
+        _telemetry = telemetry;
     }
 
     /// <exception cref="ValidationException">The query is malformed.</exception>
@@ -30,6 +35,9 @@ public sealed class GetAccountHandler
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
+
+        using var activity = _telemetry.StartActivity("ledger.account.read");
+        activity?.SetTag("ledger.account_id", query.AccountId);
 
         if (query.AccountId == Guid.Empty)
         {
