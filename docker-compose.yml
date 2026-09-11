@@ -20,6 +20,24 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: ledger-postgres
+    # Diagnostics, not tuning. pg_stat_statements records per-query timing so a
+    # bottleneck can be attributed to a statement rather than guessed at,
+    # log_lock_waits reports any lock wait longer than deadlock_timeout (1s) —
+    # the evidence needed to say whether row locks are the constraint — and the
+    # I/O timings put a number on what a commit's WAL flush costs. None of them
+    # changes what the database does with a query.
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+      - "-c"
+      - "track_io_timing=on"
+      - "-c"
+      - "track_wal_io_timing=on"
+      - "-c"
+      - "log_lock_waits=on"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ledger}
       POSTGRES_USER: ${POSTGRES_USER:-ledger}
@@ -29,6 +47,10 @@ services:
       - "${POSTGRES_PORT:-55432}:5432"
     volumes:
       - ledger-postgres-data:/var/lib/postgresql/data
+      # Runs once, on a fresh volume, to create the diagnostics extension. Kept out
+      # of the EF migrations because it is an operational tool, not schema the
+      # application depends on.
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ledger} -d ${POSTGRES_DB:-ledger}"]
       interval: 5s
@@ -103,7 +125,14 @@ services:
       ASPNETCORE_HTTP_PORTS: "8080"
       # Service names, not localhost: inside the network each container resolves
       # the others by the name Compose gives them.
-      ConnectionStrings__LedgerDatabase: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-ledger};Username=${POSTGRES_USER:-ledger};Password=${POSTGRES_PASSWORD:-ledger}"
+      #
+      # Maximum Pool Size caps how many database connections this instance may
+      # hold. 100 is Npgsql's own default, and also PostgreSQL's max_connections
+      # here, which is what lets one instance take every connection the server has.
+      # Capping it at 40 kept the server reachable but more than doubled deposit
+      # p99 latency at 50 concurrent clients, so the default stays; see
+      # docs/PERFORMANCE.md, sections 7.4 and 8.5.
+      ConnectionStrings__LedgerDatabase: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-ledger};Username=${POSTGRES_USER:-ledger};Password=${POSTGRES_PASSWORD:-ledger};Maximum Pool Size=${LEDGER_DB_MAX_POOL_SIZE:-100}"
       Redis__ConnectionString: "redis:6379"
       RabbitMq__Host: "rabbitmq"
       RabbitMq__Port: "5672"

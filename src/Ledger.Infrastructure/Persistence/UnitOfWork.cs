@@ -60,6 +60,16 @@ internal sealed class UnitOfWork : IUnitOfWork
             return await operation(cancellationToken);
         }
 
+        // EF Core wraps SaveChanges inside an explicit transaction in a savepoint,
+        // so that a caller who catches a failed save can roll back to it and carry
+        // on in the same transaction. Nothing here does that: a failed save
+        // propagates, and disposing the transaction rolls all of it back. The
+        // savepoint would only add two round trips — SAVEPOINT and RELEASE — while
+        // the account rows are locked, and every other movement on those accounts
+        // waits for them. Removing them raised deposit throughput by 13 % at 50
+        // concurrent clients; see docs/PERFORMANCE.md and LedgerRoundTripTests.
+        _context.Database.AutoSavepointsEnabled = false;
+
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
         var result = await operation(cancellationToken);

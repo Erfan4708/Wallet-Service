@@ -74,6 +74,14 @@ internal sealed class AccountRepository : IAccountRepository
     /// error. Sorting makes that impossible rather than unlikely.
     /// </para>
     /// <para>
+    /// The seeded settlement accounts have the lowest identifiers, so a deposit
+    /// or withdrawal locks the contended settlement row <em>first</em> and holds
+    /// it for the rest of the transaction. Locking it last looks like the obvious
+    /// way to hold it for less time. It was built and measured, and it made
+    /// deposits slower and their latency far less fair: see ADR-010 and
+    /// docs/PERFORMANCE.md before changing this order.
+    /// </para>
+    /// <para>
     /// One statement per row rather than a single <c>WHERE id = ANY(...) ORDER BY
     /// id FOR UPDATE</c>, because a plan is free to lock rows in the order it
     /// finds them rather than the order it returns them — the ordering guarantee

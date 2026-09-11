@@ -142,6 +142,32 @@ internal static class ObservabilityExtensions
             {
                 metrics
                     .AddMeter(LedgerTelemetry.SourceName)
+                    .AddLedgerOutboxInstrumentation()
+                    // Connection-pool usage, pending connection requests and
+                    // command durations: the evidence for whether a slow
+                    // request waited on the pool or on the database. The driver
+                    // labels every series with its pool name, which is the
+                    // connection string without the password -- host, database
+                    // and user name. That is not something to publish to every
+                    // dashboard viewer, so only the connection state survives.
+                    .AddMeter(PersistenceInstrumentation.DatabaseClientMeterName)
+                    .AddView(instrument =>
+                        instrument.Meter.Name != PersistenceInstrumentation.DatabaseClientMeterName
+                            ? null
+                            : instrument.GetType().Name.StartsWith("Histogram", StringComparison.Ordinal)
+                                // The driver reports seconds; the SDK's default
+                                // boundaries are shaped for milliseconds and would
+                                // put every command in the first bucket.
+                                ? new ExplicitBucketHistogramConfiguration
+                                {
+                                    TagKeys = ["state"],
+                                    Boundaries =
+                                    [
+                                        0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025,
+                                        0.05, 0.1, 0.25, 0.5, 1, 2.5,
+                                    ],
+                                }
+                                : new MetricStreamConfiguration { TagKeys = ["state"] })
                     // The SDK's default boundaries are shaped for milliseconds,
                     // so a metric recorded in seconds lands almost entirely in
                     // the first bucket and the histogram answers nothing. These

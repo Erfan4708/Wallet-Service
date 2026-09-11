@@ -24,6 +24,11 @@ public sealed class UnreachableDatabaseFactory : WebApplicationFactory<Program>
 
         builder.UseEnvironment("Production");
 
+        // These tests exercise endpoints, not publishing. Left on, the background
+        // outbox publisher would log a connection failure every few seconds against
+        // the deliberately unreachable database.
+        builder.UseSetting("Outbox:PublisherEnabled", "false");
+
         // UseSetting rather than ConfigureAppConfiguration: the application reads
         // its connection string while composing services, which happens before
         // the configuration callbacks a factory adds would run. A setting is

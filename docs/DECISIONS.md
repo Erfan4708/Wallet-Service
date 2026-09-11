@@ -321,7 +321,8 @@ Pessimistic row locks, acquired in a deterministic order, under READ COMMITTED.
 
 ### Status
 
-Accepted.
+Accepted. Extended by ADR-010, which records what this lock order means for
+throughput, as measured.
 
 ### Context
 
@@ -670,3 +671,104 @@ rejected because it couples database lock duration to broker latency.
 - Ordering is per-message, not global. Nothing guarantees a consumer sees two
   transactions in the order they were committed, only that it eventually sees
   both.
+
+---
+
+## ADR-010
+
+### Title
+
+The settlement account stays locked first, and the per-currency settlement row is
+accepted as the write-throughput limit.
+
+### Status
+
+Accepted.
+
+### Context
+
+Phase 6 measured the service under load; the method and every number are in
+`docs/PERFORMANCE.md`. The finding that matters here: every deposit and every
+withdrawal in a currency must lock that currency's settlement account (ADR-005,
+ADR-006), so they all queue on one row.
+
+- Deposits in one currency level off at roughly 145–155 per second from 10
+  concurrent clients upward, and fall to about 118 per second at 100–200.
+- Spreading the same load over two currencies — two settlement rows — gives 1.9
+  times the throughput. Transfers, which touch no system account, reach about 860
+  per second on the same machine.
+- 97.1 % of all database statement time is spent in `SELECT … FOR UPDATE`, almost
+  all of it waiting. The WAL flush that makes a commit durable averages 0.7 ms,
+  about a tenth of the time the row is held.
+
+The seeded settlement accounts have the lowest identifiers, so under ADR-006's
+ascending order they are locked first, and the settlement row is held for eight
+of the eleven round trips a deposit makes.
+
+### Decision
+
+The lock order stays as ADR-006 states it: ascending identifier. For deposits and
+withdrawals that means the settlement row is locked first. That is now a measured
+property rather than an accident of seeding, and `AccountRepository` points here.
+
+The single settlement row per currency is accepted as the limit on deposits and
+withdrawals at this stage. No change is made to the chart of accounts.
+
+What the transaction does while it holds the row is the lever that works. EF Core
+wraps `SaveChanges` inside an explicit transaction in a savepoint, so that a caller
+can recover from a failed save and carry on; nothing in this service ever does, so
+the savepoint was two round trips inside the locked window with no purpose.
+`UnitOfWork` now disables it. A deposit makes nine round trips instead of eleven,
+six of them while the settlement row is held instead of eight. Measured three
+repetitions against three: deposit throughput +13 % at 50 concurrent clients, with
+p99 latency roughly halved, and +28 % at 200; transfers, which are not limited by
+one row, unchanged. `LedgerRoundTripTests` fails if the savepoint returns.
+
+### Alternatives Considered
+
+**Lock the settlement account last.** Customer accounts first, system accounts
+last, identifier order within each group, the group read from the immutable
+`account_type` before locking. Still a total order, so still deadlock-free. The
+hypothesis was that a shorter hold would mean more throughput. Built, tested
+(including a database-level test that failed against the old order), and measured
+three times against three on fresh stacks:
+
+- deposits at 50 clients: −19.9 % throughput, p99 from 1.4 s to 7.7 s;
+- deposits at 10 clients: −16.2 %, p99 from 87 ms to 1.5 s;
+- transfers: −4.8 %, from the extra read.
+
+Diagnostics ruled out the obvious explanation, a convoy on shared wallets — ten
+times more wallets made the tail worse — and showed the new order to be far less
+fair: some requests waited up to 29 seconds where the existing order's longest
+sampled wait was 3.5 seconds. Why was not established. Rejected and reverted.
+
+**Shard the settlement account.** Several settlement accounts per currency, each
+movement using one. The two-currency run is direct evidence that it would scale
+roughly with the number of rows. Not done now: it changes the chart of accounts,
+reporting the settlement position means summing the shards, and nothing yet needs
+more than the measured rate. It is the next step when one currency must take more
+deposits.
+
+**Buy throughput with correctness.** `synchronous_commit = off`, optimistic
+concurrency with retries, or not locking the settlement account at all. Rejected
+without measurement. The first could lose committed money — and the flush is a
+tenth of the hold time, so it would buy little. The others let two movements act
+on a stale settlement balance.
+
+### Consequences
+
+- On the reference machine one currency takes about 165 deposits and withdrawals
+  a second with the savepoint removed (about 145 before). Latency grows in
+  proportion to the number of concurrent writers in that currency, and at 200 of
+  them throughput is lower, about 151 a second.
+- Any statement added inside a ledger transaction is paid for by every other
+  movement waiting on the same row. New round trips there should be measured, not
+  assumed to be cheap.
+- Changing the identifiers of system accounts, or the lock order, changes
+  performance as well as correctness and must be re-measured.
+- Wallet identifiers are chosen by clients. A wallet whose identifier sorts below
+  its settlement account would have the settlement row locked after it. That is
+  still a total order and still correct; its effect on that wallet's deposits was
+  not measured.
+- Settlement sharding is the documented lever for more per-currency write
+  throughput.

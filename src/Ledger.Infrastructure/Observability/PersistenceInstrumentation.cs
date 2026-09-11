@@ -1,4 +1,6 @@
+using Ledger.Infrastructure.Messaging;
 using Npgsql;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 
 namespace Ledger.Infrastructure.Observability;
@@ -15,6 +17,12 @@ namespace Ledger.Infrastructure.Observability;
 /// </remarks>
 public static class PersistenceInstrumentation
 {
+    /// <summary>
+    /// The meter the database driver publishes connection-pool and command
+    /// metrics under.
+    /// </summary>
+    public const string DatabaseClientMeterName = "Npgsql";
+
     /// <summary>Records a span for every database command.</summary>
     /// <remarks>
     /// Npgsql records the command text but not the parameter values bound to it,
@@ -26,5 +34,13 @@ public static class PersistenceInstrumentation
         ArgumentNullException.ThrowIfNull(builder);
 
         return builder.AddNpgsql();
+    }
+
+    /// <summary>Collects the outbox backlog, publication and failure metrics.</summary>
+    public static MeterProviderBuilder AddLedgerOutboxInstrumentation(this MeterProviderBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        return builder.AddMeter(OutboxTelemetry.MeterName);
     }
 }

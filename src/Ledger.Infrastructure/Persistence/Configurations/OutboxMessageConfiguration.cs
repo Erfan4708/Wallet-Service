@@ -62,7 +62,15 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
         // the index covers the pending backlog rather than the entire history of
         // everything ever published -- which is what keeps it small once the
         // table has millions of rows in it.
-        builder.HasIndex(message => message.NextAttemptAt)
+        //
+        // Keyed on id because the claim takes the oldest pending messages first,
+        // ORDER BY id. An index on next_attempt_at cannot produce that order, so
+        // PostgreSQL ignored it and walked the primary key from the first message
+        // ever written, discarding every published row on the way: 263,053 rows
+        // and 108 ms per claim once the table held 293,244 messages. Keyed on id,
+        // the same scan starts at the oldest pending row and reads only pending
+        // rows. See docs/PERFORMANCE.md.
+        builder.HasIndex(message => message.Id)
             .HasDatabaseName("ix_outbox_messages_pending")
             .HasFilter("published_at IS NULL");
     }

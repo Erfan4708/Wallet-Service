@@ -1,24 +1,39 @@
 {
   "uid": "ledger-service",
   "title": "Ledger Service",
-  "description": "Request throughput and errors, ledger operation rates and latency, and outbox health. Functional rather than decorative: every panel answers a question someone asks during an incident.",
-  "tags": ["ledger"],
+  "description": "Request throughput, errors and latency; ledger throughput and failures; the database connection pool; the outbox; and the runtime. Built for investigating load, not for display.",
+  "tags": [
+    "ledger"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "10s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "panels": [
     {
       "id": 1,
       "type": "timeseries",
       "title": "HTTP request rate",
       "description": "Requests per second by route and status. The first thing to look at: is traffic arriving at all.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (http_route, http_response_status_code) (rate(http_server_request_duration_seconds_count[5m]))",
+          "expr": "sum by (http_route, http_response_status_code) (rate(http_server_request_duration_seconds_count[1m]))",
           "legendFormat": "{{http_route}} {{http_response_status_code}}"
         }
       ]
@@ -28,12 +43,23 @@
       "type": "timeseries",
       "title": "HTTP error rate",
       "description": "Share of responses that are 5xx. Client errors are excluded deliberately: a 422 for insufficient funds is the system working, and counting it here would make the error rate a measure of how often customers overspend.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 }, "overrides": [] },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count[5m])), 0.001)",
+          "expr": "sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\"}[1m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count[1m])), 0.001)",
           "legendFormat": "5xx share"
         }
       ]
@@ -43,22 +69,32 @@
       "type": "timeseries",
       "title": "HTTP latency (p50 / p95 / p99)",
       "description": "Percentiles from the request duration histogram. The median tells you what is normal; the tail tells you what is breaking.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket[1m])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket[1m])))",
           "legendFormat": "p95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket[1m])))",
           "legendFormat": "p99"
         }
       ]
@@ -68,12 +104,22 @@
       "type": "timeseries",
       "title": "Ledger transaction rate",
       "description": "Successful ledger operations per second by kind. This is the business signal: if it goes to zero while HTTP traffic continues, money has stopped moving.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (ledger_operation) (rate(ledger_transactions_total{ledger_outcome=\"success\"}[5m]))",
+          "expr": "sum by (ledger_operation) (rate(ledger_transactions_total{ledger_outcome=\"success\"}[1m]))",
           "legendFormat": "{{ledger_operation}}"
         }
       ]
@@ -83,12 +129,22 @@
       "type": "timeseries",
       "title": "Ledger failures by reason",
       "description": "Refusals per second, broken down by cause. A rise in insufficient_funds is customer behaviour; a rise in conflict or error is usually ours.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (ledger_failure_reason) (rate(ledger_transaction_failures_total[5m]))",
+          "expr": "sum by (ledger_failure_reason) (rate(ledger_transaction_failures_total[1m]))",
           "legendFormat": "{{ledger_failure_reason}}"
         }
       ]
@@ -98,12 +154,22 @@
       "type": "timeseries",
       "title": "Ledger operation latency (p95)",
       "description": "Includes time spent waiting for account row locks, which is where contention on a hot account shows up first.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le, ledger_operation) (rate(ledger_transaction_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, ledger_operation) (rate(ledger_transaction_duration_seconds_bucket[1m])))",
           "legendFormat": "{{ledger_operation}}"
         }
       ]
@@ -111,30 +177,170 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Database connections in use",
-      "description": "From the .NET connection pool counters. A pool at its limit looks like slowness everywhere else.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "title": "Database connection pool",
+      "description": "Connections in use and idle, and commands in flight. Every connection in use with commands still arriving means the pool, not the database, is the limit.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(db_client_connections_usage)",
-          "legendFormat": "connections"
+          "expr": "sum by (state) (db_client_connections_usage)",
+          "legendFormat": "{{state}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(db_client_commands_executing)",
+          "legendFormat": "commands executing"
         }
       ]
     },
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Process memory and GC heap",
-      "description": "Runtime instrumentation. Present so that a slow endpoint can be told apart from a process under memory pressure.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "title": "GC heap and collections",
+      "description": "Heap size and collection rate. Distinguishes a slow endpoint from a process spending its time collecting garbage.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
       "targets": [
         {
           "refId": "A",
-          "expr": "process_runtime_dotnet_gc_heap_size_bytes",
-          "legendFormat": "gc heap {{generation}}"
+          "expr": "sum(process_runtime_dotnet_gc_objects_size_bytes) / 1048576",
+          "legendFormat": "heap objects (MiB)"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (generation) (rate(process_runtime_dotnet_gc_collections_count_total[1m]))",
+          "legendFormat": "gen {{generation}} collections/s"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "HTTP p99 latency by route",
+      "description": "The tail, per endpoint. Lock waits show up here long before they move the median.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket[1m])))",
+          "legendFormat": "{{http_route}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Outbox backlog",
+      "description": "Messages committed but not yet published. Grows during a broker outage and must return to zero afterwards.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ledger_outbox_pending",
+          "legendFormat": "pending"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Outbox publishing",
+      "description": "Messages confirmed by the broker per second, and failed attempts per second.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(ledger_outbox_published_total[1m])",
+          "legendFormat": "published/s"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(ledger_outbox_publish_failures_total[1m])",
+          "legendFormat": "failed/s"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Thread pool and lock contention",
+      "description": "Thread-pool queue length and .NET monitor lock contention. A growing queue means the process, not the database, is falling behind.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_runtime_dotnet_thread_pool_queue_length",
+          "legendFormat": "thread pool queue"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(process_runtime_dotnet_monitor_lock_contention_count_total[1m])",
+          "legendFormat": "monitor contention/s"
         }
       ]
     }

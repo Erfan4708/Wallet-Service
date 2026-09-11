@@ -482,3 +482,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Raw load-test output. Summarised results live in docs/PERFORMANCE.md.
+load-tests/results/

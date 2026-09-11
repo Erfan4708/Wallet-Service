@@ -116,6 +116,7 @@ public static class DependencyInjection
         services.Configure<OutboxOptions>(configuration.GetSection(OutboxOptions.SectionName));
 
         services.AddSingleton<IMessagePublisher, RabbitMqMessagePublisher>();
+        services.AddSingleton<OutboxTelemetry>();
 
         var outbox = configuration.GetSection(OutboxOptions.SectionName).Get<OutboxOptions>() ?? new OutboxOptions();
         if (outbox.PublisherEnabled)

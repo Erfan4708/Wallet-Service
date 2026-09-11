@@ -37,28 +37,33 @@ internal sealed class OutboxPublisher : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IMessagePublisher _publisher;
     private readonly OutboxOptions _options;
+    private readonly OutboxTelemetry _telemetry;
     private readonly ILogger<OutboxPublisher> _logger;
 
     public OutboxPublisher(
         IServiceScopeFactory scopeFactory,
         IMessagePublisher publisher,
         IOptions<OutboxOptions> options,
+        OutboxTelemetry telemetry,
         ILogger<OutboxPublisher> logger)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(publisher);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(telemetry);
         ArgumentNullException.ThrowIfNull(logger);
 
         _scopeFactory = scopeFactory;
         _publisher = publisher;
         _options = options.Value;
+        _telemetry = telemetry;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var idleDelay = TimeSpan.FromSeconds(_options.PollIntervalSeconds);
+        long lastBacklogRefresh = 0;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -81,12 +86,47 @@ internal sealed class OutboxPublisher : BackgroundService
                 published = 0;
             }
 
+            // The backlog count is refreshed at most once per poll interval. While
+            // a large backlog drains the loop runs without pausing, and counting
+            // after every batch would add a query per batch to the very workload
+            // it is trying to measure.
+            if (System.Diagnostics.Stopwatch.GetElapsedTime(lastBacklogRefresh) >= idleDelay)
+            {
+                try
+                {
+                    await RefreshBacklogAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                lastBacklogRefresh = System.Diagnostics.Stopwatch.GetTimestamp();
+            }
+
             // Keep going while there is a full batch to move; a backlog should
             // drain as fast as the broker allows rather than one batch per poll.
             if (published < _options.BatchSize)
             {
                 await Task.Delay(idleDelay, stoppingToken).ConfigureAwait(false);
             }
+        }
+    }
+
+    private async Task RefreshBacklogAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<LedgerDbContext>();
+
+            _telemetry.SetPending(await new OutboxStore(context).CountPendingAsync(cancellationToken));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The gauge keeps its last value. A metric that could not be refreshed
+            // is not worth failing the publisher over.
+            _logger.LogDebug(exception, "Could not refresh the outbox backlog count.");
         }
     }
 
@@ -119,6 +159,7 @@ internal sealed class OutboxPublisher : BackgroundService
                 // Only now, and only because the broker confirmed it.
                 await store.MarkPublishedAsync(message.Id, cancellationToken);
                 published++;
+                _telemetry.RecordPublished();
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -128,6 +169,8 @@ internal sealed class OutboxPublisher : BackgroundService
             }
             catch (Exception exception)
             {
+                _telemetry.RecordFailure();
+
                 await store.RecordFailureAsync(
                     message.Id,
                     message.Attempts,

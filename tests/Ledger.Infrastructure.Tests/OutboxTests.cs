@@ -268,10 +268,13 @@ public class OutboxTests : IAsyncLifetime
 
         await using var provider = services.BuildServiceProvider();
 
+        using var telemetry = new OutboxTelemetry($"ledger.outbox.test.{Guid.NewGuid():N}");
+
         var publisher = new OutboxPublisher(
             provider.GetRequiredService<IServiceScopeFactory>(),
             broker,
             Options.Create(new OutboxOptions { BatchSize = 10, ClaimLeaseSeconds = 60 }),
+            telemetry,
             NullLogger<OutboxPublisher>.Instance);
 
         return await publisher.DrainOnceAsync(CancellationToken.None);
