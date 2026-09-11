@@ -13,6 +13,11 @@
 # ranges for Hyper-V and WSL2 -- 5432 and 5672 both commonly fall inside one --
 # and Docker then fails to bind them with a permissions error that looks like a
 # Docker fault. See `netsh interface ipv4 show excludedportrange protocol=tcp`.
+#
+# Every published port binds to 127.0.0.1 unless LEDGER_BIND_ADDRESS says
+# otherwise. The development credentials below are well known and Redis has no
+# password at all, so none of these services should be reachable from the local
+# network by default.
 
 name: ledger
 
@@ -44,7 +49,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledger}
     ports:
       # Exposed so `dotnet run` and `dotnet ef` can reach it from the host.
-      - "${POSTGRES_PORT:-55432}:5432"
+      - "${LEDGER_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - ledger-postgres-data:/var/lib/postgresql/data
       # Runs once, on a fresh volume, to create the diagnostics extension. Kept out
@@ -66,7 +71,7 @@ services:
     # balance, entry and transaction, and it must stay that way.
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
-      - "${REDIS_PORT:-16379}:6379"
+      - "${LEDGER_BIND_ADDRESS:-127.0.0.1}:${REDIS_PORT:-16379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -81,10 +86,10 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ledger}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-ledger}
     ports:
-      - "${RABBITMQ_PORT:-45672}:5672"
+      - "${LEDGER_BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_PORT:-45672}:5672"
       # The management UI. Useful locally for watching the outbox drain; it is a
       # development convenience and would not be published in a deployment.
-      - "${RABBITMQ_MANAGEMENT_PORT:-45673}:15672"
+      - "${LEDGER_BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-45673}:15672"
     volumes:
       - ledger-rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
@@ -139,8 +144,12 @@ services:
       RabbitMq__Username: ${RABBITMQ_USER:-ledger}
       RabbitMq__Password: ${RABBITMQ_PASSWORD:-ledger}
       Observability__ServiceName: "ledger-api"
+      # The OpenAPI document at /swagger/v1/swagger.json and the Swagger UI at
+      # /swagger. On for this local stack; the application's own default is on only
+      # in Development.
+      OpenApi__Enabled: ${LEDGER_OPENAPI_ENABLED:-true}
     ports:
-      - "${API_PORT:-18080}:8080"
+      - "${LEDGER_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-18080}:8080"
     depends_on:
       migrator:
         condition: service_completed_successfully
@@ -168,7 +177,7 @@ services:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ledger-prometheus-data:/prometheus
     ports:
-      - "${PROMETHEUS_PORT:-19090}:9090"
+      - "${LEDGER_BIND_ADDRESS:-127.0.0.1}:${PROMETHEUS_PORT:-19090}:9090"
     depends_on:
       - api
     networks: [ledger]
@@ -190,7 +199,7 @@ services:
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ledger-grafana-data:/var/lib/grafana
     ports:
-      - "${GRAFANA_PORT:-13000}:3000"
+      - "${LEDGER_BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-13000}:3000"
     depends_on:
       - prometheus
     networks: [ledger]

@@ -34,6 +34,7 @@ public static class DependencyInjection
         services.AddScoped<WithdrawHandler>();
         services.AddScoped<TransferHandler>();
         services.AddScoped<ReverseTransactionHandler>();
+        services.AddScoped<GetLedgerTransactionHandler>();
 
         // The clock is an input, not something the code reaches for. Registering
         // it here keeps every use case a pure function of what it is given, and

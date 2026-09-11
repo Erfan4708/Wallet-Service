@@ -85,6 +85,8 @@ public sealed class TransferHandler
         }
 
         var amount = LedgerCommandValidation.BuildAmount(command.Amount, command.Currency, errors);
+        LedgerCommandValidation.RequireMaximumLength(command.IdempotencyKey, nameof(command.IdempotencyKey), errors);
+        LedgerCommandValidation.RequireMaximumLength(command.ExternalReference, nameof(command.ExternalReference), errors);
         LedgerCommandValidation.ThrowIfInvalid(errors);
 
         var occurredAt = command.OccurredAt ?? _timeProvider.GetUtcNow();
@@ -101,7 +103,11 @@ public sealed class TransferHandler
             var destination = LedgerAccounts.Require(locked, command.DestinationAccountId);
 
             var replayed = await IdempotentReplay.FindAsync(
-                _transactions, command.IdempotencyKey, LedgerTransactionKind.Transfer, amount, token);
+                _transactions,
+                command.IdempotencyKey,
+                LedgerTransactionKind.Transfer,
+                [(source.Id, amount.Negate()), (destination.Id, amount)],
+                token);
             if (replayed is not null)
             {
                 return replayed;
@@ -190,6 +196,7 @@ public sealed class ReverseTransactionHandler
         var errors = new Dictionary<string, string[]>();
         LedgerCommandValidation.RequireIdentifier(command.TransactionId, nameof(command.TransactionId), errors);
         LedgerCommandValidation.RequireIdentifier(command.OriginalTransactionId, nameof(command.OriginalTransactionId), errors);
+        LedgerCommandValidation.RequireMaximumLength(command.IdempotencyKey, nameof(command.IdempotencyKey), errors);
         LedgerCommandValidation.ThrowIfInvalid(errors);
 
         var occurredAt = command.OccurredAt ?? _timeProvider.GetUtcNow();
@@ -209,6 +216,16 @@ public sealed class ReverseTransactionHandler
                 var existing = await _transactions.FindByIdempotencyKeyAsync(command.IdempotencyKey, token);
                 if (existing is not null)
                 {
+                    // The same key must describe the same request: a reversal of
+                    // this original. Anything else is a key reused for a different
+                    // operation, and returning its result would report a reversal
+                    // that never happened.
+                    if (existing.Kind != LedgerTransactionKind.Reversal || existing.ReversesTransactionId != original.Id)
+                    {
+                        throw new ConflictException(
+                            $"Idempotency key '{command.IdempotencyKey}' was already used for a different operation.");
+                    }
+
                     return LedgerTransactionResult.From(existing, wasReplayed: true);
                 }
             }

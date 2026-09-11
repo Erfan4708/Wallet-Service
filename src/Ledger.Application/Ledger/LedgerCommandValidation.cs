@@ -1,3 +1,4 @@
+using System.Globalization;
 using Ledger.Application.Exceptions;
 using Ledger.Domain.Enums;
 using Ledger.Domain.ValueObjects;
@@ -16,6 +17,20 @@ namespace Ledger.Application.Ledger;
 /// </remarks>
 internal static class LedgerCommandValidation
 {
+    /// <summary>The largest amount a single movement may carry.</summary>
+    /// <remarks>
+    /// Amounts and balances are stored as <c>numeric(19,4)</c>, which holds at
+    /// most fifteen integer digits. A larger amount passes every business rule and
+    /// then fails inside the database, where it becomes a 500; refusing it here
+    /// makes it the client error it is. A balance can still exceed the column if
+    /// enough large movements accumulate on one account.
+    /// </remarks>
+    internal const decimal MaximumAmount = 999_999_999_999_999.99m;
+
+    /// <summary>The longest idempotency key or external reference the ledger stores.</summary>
+    /// <remarks>Matches the <c>character varying(200)</c> columns they are stored in.</remarks>
+    internal const int MaximumReferenceLength = 200;
+
     internal static Money BuildAmount(
         decimal amount,
         Currency currency,
@@ -39,6 +54,14 @@ internal static class LedgerCommandValidation
             return Money.Zero(currency);
         }
 
+        if (amount > MaximumAmount)
+        {
+            errors[amountField] =
+                [string.Create(CultureInfo.InvariantCulture, $"The amount must not exceed {MaximumAmount}.")];
+
+            return Money.Zero(currency);
+        }
+
         var places = currency.DecimalPlaces();
         if (decimal.Round(amount, places, MidpointRounding.ToEven) != amount)
         {
@@ -55,6 +78,19 @@ internal static class LedgerCommandValidation
         if (value == Guid.Empty)
         {
             errors[field] = ["An identifier is required."];
+        }
+    }
+
+    /// <remarks>
+    /// Measured as the value will be stored: surrounding whitespace is trimmed
+    /// before a key or reference is kept.
+    /// </remarks>
+    internal static void RequireMaximumLength(string? value, string field, Dictionary<string, string[]> errors)
+    {
+        if (value is not null && value.Trim().Length > MaximumReferenceLength)
+        {
+            errors[field] = [string.Create(
+                CultureInfo.InvariantCulture, $"Must be at most {MaximumReferenceLength} characters.")];
         }
     }
 

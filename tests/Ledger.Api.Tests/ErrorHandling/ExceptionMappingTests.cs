@@ -119,6 +119,23 @@ public class ExceptionMappingTests
         Assert.Empty(problem.Extensions);
     }
 
+    // A request the framework could not read is the client's mistake, but the
+    // framework's own message names internal types and JSON paths.
+    [Fact]
+    public void A_request_that_cannot_be_read_is_a_client_error_without_internal_detail()
+    {
+        var exception = new BadHttpRequestException(
+            "Failed to read parameter \"MovementRequest request\" from the request body as JSON.",
+            StatusCodes.Status400BadRequest,
+            new System.Text.Json.JsonException("The JSON value could not be converted. Path: $.currency"));
+
+        var problem = ExceptionMapping.ToProblemDetails(exception);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.DoesNotContain("MovementRequest", problem.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("$.currency", problem.Detail, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Mapping_requires_an_exception()
     {

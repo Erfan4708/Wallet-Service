@@ -108,6 +108,7 @@ public class ExceptionLoggingTests
         new InsufficientFundsException(AccountId, Money.Zero(Currency.USD), new Money(10m, Currency.USD)),
         new SameAccountTransferException(AccountId),
         new TransactionAlreadyReversedException(AccountId),
+        new BadHttpRequestException("Failed to read the request body.", StatusCodes.Status400BadRequest),
     };
 
     private static Exception ExampleOf(Type exceptionType) => exceptionType switch

@@ -283,8 +283,12 @@ public class LedgerTransactionTests
         var accounts = new Dictionary<Guid, Account> { [WalletId] = wallet, [SettlementId] = settlement };
         var reversal = LedgerTransaction.Reverse(Guid.NewGuid(), original, accounts, OccurredAt);
 
-        Assert.Throws<TransactionAlreadyReversedException>(() =>
+        var refused = Assert.Throws<TransactionAlreadyReversedException>(() =>
             LedgerTransaction.Reverse(Guid.NewGuid(), reversal, accounts, OccurredAt));
+
+        // Nothing reversed the reversal, so the refusal must not say something did.
+        Assert.Equal(reversal.Id, refused.TransactionId);
+        Assert.Equal($"Transaction {reversal.Id} is itself a reversal and cannot be reversed.", refused.Message);
     }
 
     [Fact]
@@ -349,7 +353,7 @@ public class LedgerTransactionTests
         var transaction = LedgerTransaction.Deposit(
             TransactionId, Wallet(WalletId), Settlement(), Usd(100m), OccurredAt, "key-1");
 
-        Assert.True(transaction.Matches(LedgerTransactionKind.Deposit, Usd(100m)));
+        Assert.True(transaction.Matches(LedgerTransactionKind.Deposit, [(WalletId, Usd(100m))]));
     }
 
     [Theory]
@@ -361,7 +365,35 @@ public class LedgerTransactionTests
         var transaction = LedgerTransaction.Deposit(
             TransactionId, Wallet(WalletId), Settlement(), Usd(100m), OccurredAt, "key-1");
 
-        Assert.False(transaction.Matches(kind, Usd(amount)));
+        Assert.False(transaction.Matches(kind, [(WalletId, Usd(amount))]));
+    }
+
+    // The same amount into a different wallet is a different operation. Treating
+    // it as a replay would tell the second caller its deposit succeeded when no
+    // money moved into its wallet at all.
+    [Fact]
+    public void A_transaction_rejects_a_replay_on_a_different_account()
+    {
+        var transaction = LedgerTransaction.Deposit(
+            TransactionId, Wallet(WalletId), Settlement(), Usd(100m), OccurredAt, "key-1");
+
+        Assert.False(transaction.Matches(LedgerTransactionKind.Deposit, [(OtherWalletId, Usd(100m))]));
+    }
+
+    [Fact]
+    public void A_transfer_replay_must_name_both_wallets_in_the_same_direction()
+    {
+        var source = FundedWallet(100m);
+        var destination = Wallet(OtherWalletId);
+
+        var transaction = LedgerTransaction.Transfer(
+            TransactionId, source, destination, Usd(30m), OccurredAt, "key-1");
+
+        Assert.True(transaction.Matches(
+            LedgerTransactionKind.Transfer, [(WalletId, Usd(-30m)), (OtherWalletId, Usd(30m))]));
+
+        Assert.False(transaction.Matches(
+            LedgerTransactionKind.Transfer, [(OtherWalletId, Usd(-30m)), (WalletId, Usd(30m))]));
     }
 
     [Fact]

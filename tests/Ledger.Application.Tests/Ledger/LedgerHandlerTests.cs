@@ -35,6 +35,8 @@ public class LedgerHandlerTests
 
     private ReverseTransactionHandler Reverse => new(_accounts, _transactions, _unitOfWork, TimeProvider.System, TestTelemetry.Instance);
 
+    private GetLedgerTransactionHandler GetTransaction => new(_transactions, TestTelemetry.Instance);
+
     public LedgerHandlerTests() => _accounts.Seed(LedgerScenario.Settlement(Currency.USD));
 
     private Account SeedWallet(Guid id, decimal funding = 0m, Currency currency = Currency.USD)
@@ -232,6 +234,60 @@ public class LedgerHandlerTests
         Assert.Contains("Currency", exception.Errors.Keys);
     }
 
+    // Each of these reaches a database column limit. Refused here they are a 400;
+    // let through, they fail inside PostgreSQL and become a 500.
+    [Fact]
+    public async Task An_amount_larger_than_the_ledger_can_store_is_rejected()
+    {
+        var exception = await Assert.ThrowsAsync<ValidationException>(() =>
+            Deposit.HandleAsync(new DepositCommand(TransactionId, WalletId, 1_000_000_000_000_000m, Currency.USD)));
+
+        Assert.Contains("Amount", exception.Errors.Keys);
+        Assert.Empty(_accounts.LockRequests);
+    }
+
+    [Fact]
+    public async Task An_idempotency_key_longer_than_the_ledger_stores_is_rejected()
+    {
+        var exception = await Assert.ThrowsAsync<ValidationException>(() =>
+            Deposit.HandleAsync(new DepositCommand(
+                TransactionId, WalletId, 10m, Currency.USD, IdempotencyKey: new string('k', 201))));
+
+        Assert.Contains("IdempotencyKey", exception.Errors.Keys);
+        Assert.Empty(_accounts.LockRequests);
+    }
+
+    [Fact]
+    public async Task An_external_reference_longer_than_the_ledger_stores_is_rejected()
+    {
+        var exception = await Assert.ThrowsAsync<ValidationException>(() =>
+            Transfer.HandleAsync(new TransferCommand(
+                TransactionId, WalletId, OtherWalletId, 10m, Currency.USD, ExternalReference: new string('r', 201))));
+
+        Assert.Contains("ExternalReference", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public async Task A_reversal_key_longer_than_the_ledger_stores_is_rejected()
+    {
+        var exception = await Assert.ThrowsAsync<ValidationException>(() =>
+            Reverse.HandleAsync(new ReverseTransactionCommand(
+                Guid.NewGuid(), TransactionId, IdempotencyKey: new string('k', 201))));
+
+        Assert.Contains("IdempotencyKey", exception.Errors.Keys);
+    }
+
+    [Fact]
+    public async Task A_key_of_exactly_the_maximum_length_is_accepted()
+    {
+        SeedWallet(WalletId);
+
+        var result = await Deposit.HandleAsync(new DepositCommand(
+            TransactionId, WalletId, 10m, Currency.USD, IdempotencyKey: new string('k', 200)));
+
+        Assert.False(result.WasReplayed);
+    }
+
     [Fact]
     public async Task Nothing_is_locked_or_committed_when_validation_fails()
     {
@@ -279,6 +335,40 @@ public class LedgerHandlerTests
                 new DepositCommand(Guid.NewGuid(), WalletId, 250m, Currency.USD, "key-1")));
     }
 
+    // Same key, same amount, different wallet. Replaying the first deposit here
+    // would tell the second caller its money arrived when it did not.
+    [Fact]
+    public async Task Reusing_a_key_for_a_deposit_to_another_wallet_is_a_conflict()
+    {
+        SeedWallet(WalletId);
+        SeedWallet(OtherWalletId);
+
+        await Deposit.HandleAsync(
+            new DepositCommand(TransactionId, WalletId, 100m, Currency.USD, "key-1"));
+
+        await Assert.ThrowsAsync<ConflictException>(() =>
+            Deposit.HandleAsync(
+                new DepositCommand(Guid.NewGuid(), OtherWalletId, 100m, Currency.USD, "key-1")));
+
+        Assert.Equal(0m, _accounts.Find(OtherWalletId)!.Balance.Amount);
+    }
+
+    [Fact]
+    public async Task Reusing_a_key_for_a_transfer_in_the_opposite_direction_is_a_conflict()
+    {
+        SeedWallet(WalletId, funding: 100m);
+        SeedWallet(OtherWalletId, funding: 100m);
+
+        await Transfer.HandleAsync(
+            new TransferCommand(TransactionId, WalletId, OtherWalletId, 30m, Currency.USD, "key-1"));
+
+        await Assert.ThrowsAsync<ConflictException>(() =>
+            Transfer.HandleAsync(
+                new TransferCommand(Guid.NewGuid(), OtherWalletId, WalletId, 30m, Currency.USD, "key-1")));
+
+        Assert.Equal(130m, _accounts.Find(OtherWalletId)!.Balance.Amount);
+    }
+
     [Fact]
     public async Task Requests_without_a_key_are_never_treated_as_replays()
     {
@@ -324,5 +414,66 @@ public class LedgerHandlerTests
     {
         await Assert.ThrowsAsync<NotFoundException>(() =>
             Reverse.HandleAsync(new ReverseTransactionCommand(Guid.NewGuid(), TransactionId)));
+    }
+
+    [Fact]
+    public async Task Replaying_a_reversal_returns_the_original_reversal()
+    {
+        SeedWallet(WalletId);
+        await Deposit.HandleAsync(new DepositCommand(TransactionId, WalletId, 100m, Currency.USD));
+
+        var first = await Reverse.HandleAsync(
+            new ReverseTransactionCommand(Guid.NewGuid(), TransactionId, "reverse-1"));
+        var second = await Reverse.HandleAsync(
+            new ReverseTransactionCommand(Guid.NewGuid(), TransactionId, "reverse-1"));
+
+        Assert.True(second.WasReplayed);
+        Assert.Equal(first.TransactionId, second.TransactionId);
+        Assert.Equal(0m, _accounts.Find(WalletId)!.Balance.Amount);
+    }
+
+    [Fact]
+    public async Task Reusing_a_reversal_key_for_another_transaction_is_a_conflict()
+    {
+        SeedWallet(WalletId);
+        var otherDeposit = Guid.NewGuid();
+        await Deposit.HandleAsync(new DepositCommand(TransactionId, WalletId, 100m, Currency.USD));
+        await Deposit.HandleAsync(new DepositCommand(otherDeposit, WalletId, 40m, Currency.USD));
+
+        await Reverse.HandleAsync(new ReverseTransactionCommand(Guid.NewGuid(), TransactionId, "reverse-1"));
+
+        await Assert.ThrowsAsync<ConflictException>(() =>
+            Reverse.HandleAsync(new ReverseTransactionCommand(Guid.NewGuid(), otherDeposit, "reverse-1")));
+
+        Assert.Equal(40m, _accounts.Find(WalletId)!.Balance.Amount);
+    }
+
+    // ------------------------------------------------------ reading a transaction
+
+    [Fact]
+    public async Task A_recorded_transaction_can_be_read_back()
+    {
+        SeedWallet(WalletId);
+        var recorded = await Deposit.HandleAsync(new DepositCommand(TransactionId, WalletId, 100m, Currency.USD));
+
+        var read = await GetTransaction.HandleAsync(new GetLedgerTransactionQuery(TransactionId));
+
+        Assert.Equal(recorded.TransactionId, read.TransactionId);
+        Assert.Equal(recorded.Entries, read.Entries);
+        Assert.False(read.WasReplayed);
+    }
+
+    [Fact]
+    public async Task Reading_an_unknown_transaction_is_not_found()
+    {
+        await Assert.ThrowsAsync<NotFoundException>(() =>
+            GetTransaction.HandleAsync(new GetLedgerTransactionQuery(TransactionId)));
+    }
+
+    [Fact]
+    public async Task Reading_a_transaction_requires_an_identifier()
+    {
+        await Assert.ThrowsAsync<ValidationException>(() =>
+            GetTransaction.HandleAsync(new GetLedgerTransactionQuery(Guid.Empty)));
     }
 }

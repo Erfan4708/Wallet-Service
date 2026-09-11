@@ -36,6 +36,16 @@ public static class ExceptionMapping
         return exception switch
         {
             ValidationException validation => Validation(validation),
+
+            // The request could not be read at all: malformed JSON, a currency
+            // that is not one of the accepted codes, a missing body. The client's
+            // mistake, so a client error -- but the framework's message names
+            // internal types and JSON paths, so it is replaced, not passed on.
+            BadHttpRequestException badRequest => Problem(
+                badRequest.StatusCode,
+                "The request could not be read.",
+                "The request body or its parameters are missing or malformed."),
+
             NotFoundException notFound => Problem(StatusCodes.Status404NotFound, "Not found.", notFound.Message),
             ConflictException conflict => Problem(StatusCodes.Status409Conflict, "Conflict.", conflict.Message),
 

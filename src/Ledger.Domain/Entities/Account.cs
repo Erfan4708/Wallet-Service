@@ -22,10 +22,10 @@ namespace Ledger.Domain.Entities;
 /// <para>
 /// <b>Why the balance is stored rather than derived.</b> Summing the ledger on
 /// every read means loading an account's whole history to answer one question,
-/// and leaves nothing to lock when concurrency is addressed. The stored balance
-/// is a projection; once ledger entries exist, they are the audit truth and the
-/// two must be provably in agreement. This is an open decision worth recording
-/// in an ADR.
+/// and leaves no single row to lock against concurrent movements. The stored
+/// balance is a projection of the account's ledger entries, which are the audit
+/// truth; the two are written in one transaction and must always agree. See
+/// ADR-001 and ADR-005.
 /// </para>
 /// </remarks>
 public sealed class Account

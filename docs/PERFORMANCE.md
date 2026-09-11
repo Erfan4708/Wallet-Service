@@ -50,6 +50,32 @@ compare well against each other and say little about dedicated hardware.
   delivered, one legitimate duplicate (sections 10 and 11).
 - **Still limited by:** the settlement row, a single outbox publisher, an outbox
   that is never pruned, and a connection pool sized like the server (section 12).
+- **Measured code.** Everything above was measured on the code committed as
+  `50447ef`. Phase 7 later tightened request validation, made the idempotency
+  comparison check accounts and direction, and added a read endpoint and OpenAPI.
+  None of those adds a database round trip to a money movement, and none was
+  re-benchmarked.
+
+## Contents
+
+1. [Test environment](#1-test-environment) · 2. [Software versions](#2-software-versions) ·
+3. [Database configuration](#3-database-configuration) ·
+4. [API configuration](#4-api-configuration-during-measurement) ·
+5. [How the load tests work](#5-how-the-load-tests-work) · 6. [Baseline](#6-baseline) ·
+7. [Where the time goes](#7-where-the-time-goes) · 8. [Optimisations tried](#8-optimisations-tried) ·
+9. [Concurrency and deadlocks](#9-concurrency-and-deadlocks) ·
+10. [Correctness after load](#10-correctness-after-load) ·
+11. [The outbox under load](#11-the-outbox-under-load-and-without-a-broker) ·
+12. [What is still slow](#12-what-is-still-slow-and-what-was-not-answered) ·
+13. [How far these numbers can be trusted](#13-how-far-these-numbers-can-be-trusted) ·
+14. [Reproducing the measurements](#14-reproducing-the-measurements)
+
+| Optimisation | Section | Result |
+|---|---|---|
+| Lock the settlement account last | 8.1 | **Rejected** — deposits −19.9 % at 50 clients, p99 1.4 s → 7.7 s |
+| Index pending outbox messages by `id` | 8.2 | **Kept** — claim 110 ms → 1.1 ms |
+| Disable EF Core's automatic savepoint | 8.3 | **Kept** — deposits +13.0 % at 50 clients, +28.2 % at 200 |
+| Cap the connection pool at 40 | 8.5 | **Not adopted** — no throughput change, deposit p99 doubled at 50 clients |
 
 ## 1. Test environment
 
@@ -73,7 +99,7 @@ would do on dedicated hardware.
 
 | Component | Version |
 |---|---|
-| Repository | `9b49910` plus the Phase 6 changes described here |
+| Repository | `9b49910` plus the Phase 6 changes, committed afterwards as `50447ef` |
 | .NET runtime (container) | ASP.NET Core 8.0.31 |
 | .NET SDK (host) | 8.0.200 |
 | EF Core / Npgsql | 8.0.11 / 8.0.x |
@@ -968,6 +994,28 @@ than it looks. Read them with these limits in mind:
 - **One workload shape.** Wallets were chosen uniformly at random. Real traffic is
   skewed — a few very busy accounts — and would make wallet rows hotter than they
   were here.
+
+### Experiment disclosures
+
+Everything that went wrong while measuring, in one place:
+
+- **Three baseline runs were disturbed** by a CPU-heavy log search run on the host
+  by mistake (22:17:50Z–22:20:20Z). They are marked in section 6 and were not used as
+  evidence; the settlement-row comparison they belonged to was re-run cleanly (7.5).
+- **A first "before" set was discarded.** Three repetitions run back to back on the
+  baseline's database drifted downwards as it grew — deposits at 50 VUs fell from
+  147.8 to 133.4–134.5 req/s — so every comparison was re-measured on fresh stacks.
+- **Two background runs were killed** by the tooling when the host ran low on memory.
+  The orphaned load was stopped, partial repetitions were discarded, and later runs
+  checked free memory first.
+- **The laptop slept once** (04:07:58Z–08:12:08Z). No measured run spanned it; the
+  connection-pool experiment, which ran afterwards, re-measured its own control.
+- **Two claims in the working notes were wrong and corrected before publication:** a
+  supposed ~5 % post-wake slowdown (it came from a pool-40 run, not from the wake)
+  and a per-run retry count that was in fact cumulative (8.2).
+- **Three unexpected responses** occurred, all on the rejected lock-order image; their
+  status was not captured (8.1).
+- **One rollback** in the lock-order set was not matched to a refusal (9).
 
 ## 14. Reproducing the measurements
 

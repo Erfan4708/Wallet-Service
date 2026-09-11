@@ -1,6 +1,7 @@
 using Ledger.Application.Abstractions;
 using Ledger.Application.Accounts.CreateAccount;
 using Ledger.Application.Accounts.GetAccount;
+using Ledger.Application.Ledger;
 using Ledger.Application.Tests.Fakes;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -24,10 +25,11 @@ public class DependencyInjectionTests
 
         services.AddApplication();
 
-        // Stands in for the infrastructure layer, which has no implementations
-        // yet. The point of the exercise is that the application layer is
-        // satisfied by anything implementing its abstractions.
+        // Stands in for the infrastructure layer. The point of the exercise is
+        // that the application layer is satisfied by anything implementing its
+        // abstractions.
         services.AddScoped<IAccountRepository>(_ => new FakeAccountRepository());
+        services.AddScoped<ILedgerTransactionRepository>(_ => new FakeLedgerTransactionRepository());
         services.AddScoped<IUnitOfWork>(_ => new FakeUnitOfWork());
 
         return services.BuildServiceProvider(validateScopes: true);
@@ -41,11 +43,17 @@ public class DependencyInjectionTests
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<CreateAccountHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<GetAccountHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<GetAccountStatementHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<DepositHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<WithdrawHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<TransferHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ReverseTransactionHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<GetLedgerTransactionHandler>());
     }
 
-    // Scoped, not singleton: a handler will hold a unit of work bound to one
-    // request's transaction, and sharing that across requests would mean sharing
-    // a transaction across requests.
+    // Scoped, not singleton: a handler holds a unit of work bound to one request's
+    // transaction, and sharing that across requests would mean sharing a
+    // transaction across requests.
     [Fact]
     public void Use_cases_are_scoped_to_a_request()
     {

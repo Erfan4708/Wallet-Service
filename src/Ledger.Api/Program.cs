@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Ledger.Api.Endpoints;
 using Ledger.Api.ErrorHandling;
 using Ledger.Api.Observability;
+using Ledger.Api.OpenApi;
 using Ledger.Application;
 using Ledger.Infrastructure;
 using Serilog;
@@ -31,6 +32,19 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 // means nothing to anyone reading a log.
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
+// A request that cannot be read -- malformed JSON, an unknown currency code, a
+// missing body -- is thrown to the exception handler in every environment, so it
+// receives the same problem details, with the same trace identifier, as any other
+// refused request. The framework's default outside Development is a bare 400 with
+// no body at all.
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
+
+var openApiEnabled = builder.IsLedgerOpenApiEnabled();
+if (openApiEnabled)
+{
+    builder.Services.AddLedgerOpenApi();
+}
 
 // The composition root, and the only place that knows every layer exists.
 builder.Services.AddApplication();
@@ -62,15 +76,21 @@ app.UseTraceIdentifierHeader();
 app.UseLedgerRequestLogging();
 app.UseExceptionHandler();
 
+if (openApiEnabled)
+{
+    // /swagger/v1/swagger.json and the UI at /swagger. See OpenApiExtensions.
+    app.UseLedgerOpenApi();
+}
+
 app.MapLedgerHealthChecks();
 app.MapLedgerEndpoints();
 
 if (app.Services.GetRequiredService<IConfiguration>()
         .GetValue($"{ObservabilityOptions.SectionName}:Metrics:PrometheusEndpoint", defaultValue: true))
 {
-    // Serves /metrics in the text format Prometheus scrapes. Only the endpoint is
-    // exposed here: deploying a Prometheus server, and anything that reads from
-    // it, is a separate concern and a later phase.
+    // Serves /metrics in the text format Prometheus scrapes. The Prometheus
+    // server and the Grafana dashboards that read it are defined in
+    // docker-compose.yml; the application only exposes the endpoint.
     app.MapPrometheusScrapingEndpoint();
 }
 

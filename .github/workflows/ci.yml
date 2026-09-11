@@ -104,8 +104,8 @@ jobs:
         with:
           context: .
           # Not published anywhere. This step exists to prove the Dockerfile
-          # still builds; pushing to a registry is a deployment concern and a
-          # later phase.
+          # still builds; pushing to a registry is a deployment concern outside
+          # this repository's scope.
           push: false
           load: true
           tags: ledger-api:ci

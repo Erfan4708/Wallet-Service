@@ -57,8 +57,8 @@ public sealed class LedgerEntry
     /// caller, and deliberately so. An entry is never referenced by an external
     /// system — its business identity is the transaction it belongs to, which
     /// <em>is</em> caller-supplied. A monotonic integer buys compact indexes,
-    /// insertion-order locality at volume, and a cheap total ordering that the
-    /// future outbox can use as a streaming cursor.
+    /// insertion-order locality at volume, and a cheap total ordering for paging
+    /// through an account's history.
     /// </remarks>
     public long Id { get; }
 

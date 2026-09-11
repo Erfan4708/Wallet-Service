@@ -50,8 +50,8 @@ public sealed class CreateAccountHandler
 
         // Checking first gives a clear 409 for the common case. It is not a
         // guarantee: two concurrent requests can both pass this check. The
-        // authoritative defence is a unique constraint in the database, which
-        // arrives with the persistence phase.
+        // authoritative defence is the primary key, whose violation the unit of
+        // work translates into the same conflict.
         var existing = await _accounts.GetByIdAsync(command.AccountId, cancellationToken);
         if (existing is not null)
         {

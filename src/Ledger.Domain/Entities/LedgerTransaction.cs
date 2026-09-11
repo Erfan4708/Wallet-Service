@@ -216,7 +216,7 @@ public sealed class LedgerTransaction
             // Reversing a reversal would restore a state that was already
             // determined to be wrong. If the correction itself was wrong, the
             // answer is a new transaction describing the intended position.
-            throw new TransactionAlreadyReversedException(original.Id);
+            throw TransactionAlreadyReversedException.ForReversal(original.Id);
         }
 
         var reversal = new LedgerTransaction(
@@ -244,16 +244,25 @@ public sealed class LedgerTransaction
     /// <remarks>
     /// A retry that reuses an idempotency key for different parameters must not
     /// quietly receive the original's result — that would report success for an
-    /// operation that never happened. This is a deliberately small fingerprint;
-    /// a fuller one would hash the whole request and store it alongside the key.
+    /// operation that never happened. The fingerprint is the kind of movement and
+    /// every leg the request asked for: which account, in which direction, and how
+    /// much. A deposit of the same amount into a different wallet, or a transfer
+    /// between the same two wallets in the opposite direction, is a different
+    /// operation. A fuller fingerprint would hash the whole request and store it
+    /// alongside the key.
     /// </remarks>
-    public bool Matches(LedgerTransactionKind kind, Money amount)
+    /// <param name="kind">The kind of movement the request asks for.</param>
+    /// <param name="legs">
+    /// Each account the request moves money on, with the signed amount it asks
+    /// for: positive increases the account's balance, negative decreases it.
+    /// </param>
+    public bool Matches(LedgerTransactionKind kind, IReadOnlyCollection<(Guid AccountId, Money Amount)> legs)
     {
-        ArgumentNullException.ThrowIfNull(amount);
+        ArgumentNullException.ThrowIfNull(legs);
 
         return Kind == kind
-            && Currency == amount.Currency
-            && _entries.Any(entry => entry.Amount == amount || entry.Amount == amount.Negate());
+            && legs.Count > 0
+            && legs.All(leg => _entries.Any(entry => entry.AccountId == leg.AccountId && entry.Amount == leg.Amount));
     }
 
     public void ClearDomainEvents() => _domainEvents.Clear();

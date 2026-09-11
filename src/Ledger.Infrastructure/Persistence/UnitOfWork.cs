@@ -21,7 +21,7 @@ namespace Ledger.Infrastructure.Persistence;
 /// one change tracker and commits together.
 /// </para>
 /// <para>
-/// The ledger needs an <em>explicit</em> transaction, which Phase 3 did not. Row
+/// The ledger needs an <em>explicit</em> transaction. Row
 /// locks live only as long as the transaction that took them, and the ledger
 /// takes its locks before it reads a balance. Relying on the implicit transaction
 /// that <c>SaveChanges</c> opens would acquire the locks in one transaction and

@@ -29,8 +29,8 @@ internal sealed class LedgerEntryConfiguration : IEntityTypeConfiguration<Ledger
         // The one identifier in this system the database assigns. An entry is
         // never referenced externally — its business identity is the transaction
         // it belongs to, which is caller-supplied — so a monotonic integer buys
-        // compact indexes, insertion-order locality, and a cheap cursor for the
-        // future outbox to stream from.
+        // compact indexes, insertion-order locality, and a cheap cursor for paging
+        // through an account's history.
         builder.Property(entry => entry.Id)
             .HasColumnName("id")
             .UseIdentityAlwaysColumn();

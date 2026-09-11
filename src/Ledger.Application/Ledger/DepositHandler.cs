@@ -81,6 +81,8 @@ public sealed class DepositHandler
         LedgerCommandValidation.RequireIdentifier(command.TransactionId, nameof(command.TransactionId), errors);
         LedgerCommandValidation.RequireIdentifier(command.AccountId, nameof(command.AccountId), errors);
         var amount = LedgerCommandValidation.BuildAmount(command.Amount, command.Currency, errors);
+        LedgerCommandValidation.RequireMaximumLength(command.IdempotencyKey, nameof(command.IdempotencyKey), errors);
+        LedgerCommandValidation.RequireMaximumLength(command.ExternalReference, nameof(command.ExternalReference), errors);
         LedgerCommandValidation.ThrowIfInvalid(errors);
 
         var occurredAt = command.OccurredAt ?? _timeProvider.GetUtcNow();
@@ -95,7 +97,7 @@ public sealed class DepositHandler
             var settlementLocked = LedgerAccounts.Require(locked, settlement.Id);
 
             var replayed = await IdempotentReplay.FindAsync(
-                _transactions, command.IdempotencyKey, LedgerTransactionKind.Deposit, amount, token);
+                _transactions, command.IdempotencyKey, LedgerTransactionKind.Deposit, [(wallet.Id, amount)], token);
             if (replayed is not null)
             {
                 return replayed;

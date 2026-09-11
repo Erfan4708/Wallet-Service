@@ -8,6 +8,24 @@ decision has been made, it is not rewritten. If we change our mind later, we add
 a new ADR and mark the old one as `Superseded by ADR-XXX`.
 
 **Status** is one of: `Proposed`, `Accepted`, `Superseded by ADR-XXX`, `Deprecated`.
+A decision refined later without being reversed keeps its record and gains a dated
+amendment note.
+
+## Index
+
+| ADR | Decision | Status |
+|---|---|---|
+| [001](#adr-001) | Account balance is stored, not derived from ledger entries | Accepted, completed by 005 |
+| [002](#adr-002) | Repository abstractions live in the application layer | Accepted |
+| [003](#adr-003) | PostgreSQL through EF Core, configured entirely outside the domain | Accepted, extended by 005 |
+| [004](#adr-004) | Money is `decimal` / `numeric`; currency stored as its ISO 4217 alpha code | Accepted |
+| [005](#adr-005) | Double-entry ledger with system accounts and one aggregate owning every balance change | Accepted |
+| [006](#adr-006) | Pessimistic row locks in a deterministic order under READ COMMITTED | Accepted, extended by 010 |
+| [007](#adr-007) | Idempotency through a unique key, checked in the transaction that moves the money | Accepted, amended in Phase 7 |
+| [008](#adr-008) | Serilog, OpenTelemetry and Prometheus for observability | Accepted, deployment recorded in 011 |
+| [009](#adr-009) | Transactional outbox with at-least-once delivery | Accepted |
+| [010](#adr-010) | Settlement account stays locked first; the settlement row is the accepted write limit | Accepted |
+| [011](#adr-011) | One non-root image, a Compose stack with a one-shot migrator, and Redis with no role | Accepted, recorded retrospectively |
 
 ---
 
@@ -379,7 +397,8 @@ transaction that moves the money.
 
 ### Status
 
-Accepted.
+Accepted. Amended in Phase 7: the request fingerprint now includes the accounts and
+direction of every leg (see the amendment at the end of this record).
 
 ### Context
 
@@ -423,6 +442,22 @@ attempts find nothing and both proceed.
 - The request fingerprint is deliberately small — kind, currency and amount. A
   fuller one would hash the whole request and store it beside the key.
 
+### Amendment (Phase 7)
+
+A Phase 7 audit found that the fingerprint above did not keep this record's promise
+that a key reused with different parameters is refused. It compared only the kind,
+the currency and the amount, so a deposit of the same amount into a *different*
+wallet under a used key was answered with 200 and the first wallet's transaction:
+the caller was told its money had arrived when none had moved. The same held for a
+transfer between the same two wallets in the opposite direction, and a reversal
+request replayed the result stored under its key whatever that result was.
+
+The fingerprint is now the kind of movement plus every leg the request names — each
+account and the signed amount it moves — and a stored transaction matches only if it
+contains all of them. A replayed reversal must be a reversal of the same original.
+Anything else is refused with 409. The mechanism, the locking and the unique index are
+unchanged; only the comparison made after the lookup is stricter.
+
 ---
 
 ## ADR-008
@@ -434,7 +469,8 @@ metrics, Prometheus for scraping.
 
 ### Status
 
-Accepted.
+Accepted. The Prometheus and Grafana deployment this record leaves out of scope was
+added later and is recorded in ADR-011.
 
 ### Context
 
@@ -772,3 +808,85 @@ on a stale settlement balance.
   not measured.
 - Settlement sharding is the documented lever for more per-currency write
   throughput.
+
+---
+
+## ADR-011
+
+### Title
+
+The service ships as one non-root image, runs locally as a Compose stack with a
+one-shot migrator, and is given Redis without giving Redis a role.
+
+### Status
+
+Accepted. Recorded retrospectively in Phase 7: these decisions were made when the
+production infrastructure was added, and no record captured them at the time.
+
+### Context
+
+The ledger has to run somewhere other than a developer's IDE, alongside PostgreSQL,
+a broker, and something that scrapes its metrics — and a reviewer has to be able to
+start all of it with one command. Several choices in that environment affect
+correctness rather than convenience: when migrations run, which dependencies can
+stop the service from serving, and whether infrastructure that exists invites being
+used for things it must not hold.
+
+### Decision
+
+- **One image for the API and the migrator.** A multi-stage Dockerfile builds with
+  warnings as errors and runs on the ASP.NET runtime image as a dedicated
+  unprivileged user. No connection string or credential is baked in.
+- **Migrations run once, before the API, from that image** (`--migrate`). Compose
+  starts the API only after the migrator exits successfully. Replicas never migrate
+  on start-up, because EF Core takes no lock that would make concurrent migrations
+  safe.
+- **PostgreSQL is the only hard dependency.** Readiness fails (503) without it.
+  RabbitMQ and Redis are *degradable*: readiness reports `Degraded` and still returns
+  200, because an instance that cannot reach them can still move money correctly
+  (ADR-009). Liveness checks nothing external.
+- **Redis is provisioned, connected and health-checked, and nothing reads or writes
+  it.** It runs without persistence. No balance, idempotency record or lock is kept
+  there, because a cache that holds financial state is how a stale value becomes
+  authoritative. It exists so a future feature with a legitimate need — rate
+  limiting, for example — has the infrastructure ready.
+- **Prometheus and Grafana are part of the stack**, provisioned from files in
+  `deploy/`, so the dashboard exists on first start and survives `down -v`.
+- **Local exposure is minimal by default.** Host ports are unconventional (Windows
+  reserves ranges containing 5432 and 5672) and every one binds to 127.0.0.1 unless
+  `LEDGER_BIND_ADDRESS` says otherwise, because the development credentials are
+  well known and Redis has no password. Every port and credential is an environment
+  variable with a development default; nothing in the repository is a secret.
+- **CI proves what the repository claims**: a Release build with warnings as errors,
+  every test with Docker required and a check that nothing was skipped, an image that
+  starts and passes liveness without a database while running as a non-root user,
+  and a valid Compose file.
+
+### Alternatives Considered
+
+**Migrating on API start-up.** Simpler, and unsafe with more than one replica.
+
+**Making RabbitMQ a hard readiness dependency.** Rejected: it would turn a broker
+outage into a financial outage, which the outbox exists to prevent.
+
+**Using Redis for idempotency keys or as a balance cache.** Rejected. The idempotency
+check must be atomic with the money movement, which only the database transaction
+gives; a cached balance would be a second, weaker source of truth.
+
+**Leaving Redis out until something needs it.** Defensible. It was provisioned so the
+environment and its health semantics are in place, at the cost of one container that
+does nothing yet — a cost the documentation states plainly.
+
+**Publishing ports on every interface.** Docker's default, and rejected for a stack
+with a passwordless Redis and default credentials.
+
+### Consequences
+
+- `docker compose up -d --build` starts a complete, observable environment from a
+  clean clone.
+- A reader must not infer from Redis's presence that anything is cached; the README,
+  the architecture document and the health check description all say it has no role.
+- The Compose stack is a development environment, not a deployment. It has no TLS,
+  no secrets management, no authentication in front of the API, and the application
+  connects to PostgreSQL as a superuser.
+- The image build is exercised on every push, but no image is published.
